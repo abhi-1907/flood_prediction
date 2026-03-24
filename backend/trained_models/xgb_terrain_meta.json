@@ -1,0 +1,12 @@
+{
+  "accuracy": 0.804,
+  "roc_auc": 0.8905,
+  "feature_group": "terrain",
+  "features": [
+    "lat",
+    "lon",
+    "elevation_m",
+    "slope_degree",
+    "terrain_type_encoded"
+  ]
+}

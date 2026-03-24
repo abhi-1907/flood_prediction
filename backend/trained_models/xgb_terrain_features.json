@@ -1,0 +1,7 @@
+[
+  "lat",
+  "lon",
+  "elevation_m",
+  "slope_degree",
+  "terrain_type_encoded"
+]

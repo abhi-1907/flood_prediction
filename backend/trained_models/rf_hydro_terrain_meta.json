@@ -1,0 +1,15 @@
+{
+  "accuracy": 0.8515,
+  "roc_auc": 0.9279,
+  "feature_group": "hydro_terrain",
+  "features": [
+    "dam_count_50km",
+    "dist_major_river_km",
+    "waterbody_nearby",
+    "lat",
+    "lon",
+    "elevation_m",
+    "slope_degree",
+    "terrain_type_encoded"
+  ]
+}

@@ -1,0 +1,10 @@
+[
+  "dam_count_50km",
+  "dist_major_river_km",
+  "waterbody_nearby",
+  "lat",
+  "lon",
+  "elevation_m",
+  "slope_degree",
+  "terrain_type_encoded"
+]

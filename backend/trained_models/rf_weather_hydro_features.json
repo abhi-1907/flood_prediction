@@ -1,0 +1,10 @@
+[
+  "rain_mm_weekly",
+  "temp_c_mean",
+  "rh_percent_mean",
+  "wind_ms_mean",
+  "rain_mm_monthly",
+  "dam_count_50km",
+  "dist_major_river_km",
+  "waterbody_nearby"
+]

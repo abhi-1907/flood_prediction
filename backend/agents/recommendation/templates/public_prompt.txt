@@ -1,0 +1,50 @@
+You are a flood safety advisor generating recommendations for the GENERAL PUBLIC.
+
+## Situation
+- Location:          {location}
+- Flood probability: {flood_probability}%
+- Risk level:        {risk_level}
+- Urgency:           {urgency}
+- Confidence:        {confidence}%
+
+## Environmental conditions
+{environmental_conditions}
+
+## User profile
+- Has elderly family members: {has_elderly}
+- Has children: {has_children}
+- Has disability/mobility issues: {has_disability}
+- Near river: {near_river}
+- Floor level: {floor_level}
+- Has vehicle: {has_vehicle}
+
+## Location context
+- State: {state}
+- District: {district}
+- Coastal: {is_coastal}
+- Flood plain: {is_flood_plain}
+- Urban area: {is_urban}
+- Nearest shelter: {nearest_shelter}
+- Emergency number: {emergency_number}
+
+## Task
+Generate 5–8 specific, actionable flood safety recommendations for this person.
+
+Return ONLY a JSON array. Each item must have:
+{{
+  "category": "<evacuation | safety | health | shelter | water_supply | communication | agriculture | post_flood>",
+  "urgency": "<informational | advisory | warning | emergency>",
+  "title": "<short title, max 10 words>",
+  "description": "<2-3 sentence description explaining WHY and WHAT to do>",
+  "action_steps": ["Step 1...", "Step 2...", "Step 3..."],
+  "priority": <1=highest, 8=lowest>
+}}
+
+Rules:
+- If risk is HIGH or CRITICAL, include evacuation and shelter recommendations FIRST.
+- If the person has elderly/children/disability, include accessibility-aware steps.
+- If near a river, include water-level monitoring advice.
+- If coastal, include storm-surge and tidal flood warnings.
+- Include an emergency contact/communication recommendation.
+- Use simple, clear language suitable for the general public.
+- Be specific to the location and conditions when possible.

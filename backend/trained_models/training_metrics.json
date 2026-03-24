@@ -1,0 +1,204 @@
+{
+  "xgb_weather": {
+    "accuracy": 0.9464,
+    "roc_auc": 0.988,
+    "feature_group": "weather",
+    "features": [
+      "rain_mm_weekly",
+      "temp_c_mean",
+      "rh_percent_mean",
+      "wind_ms_mean",
+      "rain_mm_monthly"
+    ]
+  },
+  "rf_weather": {
+    "accuracy": 0.9444,
+    "roc_auc": 0.987,
+    "feature_group": "weather",
+    "features": [
+      "rain_mm_weekly",
+      "temp_c_mean",
+      "rh_percent_mean",
+      "wind_ms_mean",
+      "rain_mm_monthly"
+    ]
+  },
+  "xgb_hydro": {
+    "accuracy": 0.8183,
+    "roc_auc": 0.876,
+    "feature_group": "hydro",
+    "features": [
+      "dam_count_50km",
+      "dist_major_river_km",
+      "waterbody_nearby"
+    ]
+  },
+  "rf_hydro": {
+    "accuracy": 0.8234,
+    "roc_auc": 0.8758,
+    "feature_group": "hydro",
+    "features": [
+      "dam_count_50km",
+      "dist_major_river_km",
+      "waterbody_nearby"
+    ]
+  },
+  "xgb_terrain": {
+    "accuracy": 0.804,
+    "roc_auc": 0.8905,
+    "feature_group": "terrain",
+    "features": [
+      "lat",
+      "lon",
+      "elevation_m",
+      "slope_degree",
+      "terrain_type_encoded"
+    ]
+  },
+  "rf_terrain": {
+    "accuracy": 0.8091,
+    "roc_auc": 0.8843,
+    "feature_group": "terrain",
+    "features": [
+      "lat",
+      "lon",
+      "elevation_m",
+      "slope_degree",
+      "terrain_type_encoded"
+    ]
+  },
+  "xgb_weather_hydro": {
+    "accuracy": 0.9929,
+    "roc_auc": 0.9994,
+    "feature_group": "weather_hydro",
+    "features": [
+      "rain_mm_weekly",
+      "temp_c_mean",
+      "rh_percent_mean",
+      "wind_ms_mean",
+      "rain_mm_monthly",
+      "dam_count_50km",
+      "dist_major_river_km",
+      "waterbody_nearby"
+    ]
+  },
+  "rf_weather_hydro": {
+    "accuracy": 0.9867,
+    "roc_auc": 0.999,
+    "feature_group": "weather_hydro",
+    "features": [
+      "rain_mm_weekly",
+      "temp_c_mean",
+      "rh_percent_mean",
+      "wind_ms_mean",
+      "rain_mm_monthly",
+      "dam_count_50km",
+      "dist_major_river_km",
+      "waterbody_nearby"
+    ]
+  },
+  "xgb_weather_terrain": {
+    "accuracy": 0.9944,
+    "roc_auc": 0.999,
+    "feature_group": "weather_terrain",
+    "features": [
+      "rain_mm_weekly",
+      "temp_c_mean",
+      "rh_percent_mean",
+      "wind_ms_mean",
+      "rain_mm_monthly",
+      "lat",
+      "lon",
+      "elevation_m",
+      "slope_degree",
+      "terrain_type_encoded"
+    ]
+  },
+  "rf_weather_terrain": {
+    "accuracy": 0.9867,
+    "roc_auc": 0.999,
+    "feature_group": "weather_terrain",
+    "features": [
+      "rain_mm_weekly",
+      "temp_c_mean",
+      "rh_percent_mean",
+      "wind_ms_mean",
+      "rain_mm_monthly",
+      "lat",
+      "lon",
+      "elevation_m",
+      "slope_degree",
+      "terrain_type_encoded"
+    ]
+  },
+  "xgb_hydro_terrain": {
+    "accuracy": 0.8525,
+    "roc_auc": 0.9316,
+    "feature_group": "hydro_terrain",
+    "features": [
+      "dam_count_50km",
+      "dist_major_river_km",
+      "waterbody_nearby",
+      "lat",
+      "lon",
+      "elevation_m",
+      "slope_degree",
+      "terrain_type_encoded"
+    ]
+  },
+  "rf_hydro_terrain": {
+    "accuracy": 0.8515,
+    "roc_auc": 0.9279,
+    "feature_group": "hydro_terrain",
+    "features": [
+      "dam_count_50km",
+      "dist_major_river_km",
+      "waterbody_nearby",
+      "lat",
+      "lon",
+      "elevation_m",
+      "slope_degree",
+      "terrain_type_encoded"
+    ]
+  },
+  "xgb_all": {
+    "accuracy": 0.9913,
+    "roc_auc": 0.9992,
+    "feature_group": "all",
+    "features": [
+      "rain_mm_weekly",
+      "temp_c_mean",
+      "rh_percent_mean",
+      "wind_ms_mean",
+      "rain_mm_monthly",
+      "dam_count_50km",
+      "dist_major_river_km",
+      "waterbody_nearby",
+      "lat",
+      "lon",
+      "elevation_m",
+      "slope_degree",
+      "terrain_type_encoded"
+    ]
+  },
+  "rf_all": {
+    "accuracy": 0.9893,
+    "roc_auc": 0.9992,
+    "feature_group": "all",
+    "features": [
+      "rain_mm_weekly",
+      "temp_c_mean",
+      "rh_percent_mean",
+      "wind_ms_mean",
+      "rain_mm_monthly",
+      "dam_count_50km",
+      "dist_major_river_km",
+      "waterbody_nearby",
+      "lat",
+      "lon",
+      "elevation_m",
+      "slope_degree",
+      "terrain_type_encoded"
+    ]
+  }
+}

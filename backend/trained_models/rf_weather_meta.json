@@ -1,0 +1,12 @@
+{
+  "accuracy": 0.9444,
+  "roc_auc": 0.987,
+  "feature_group": "weather",
+  "features": [
+    "rain_mm_weekly",
+    "temp_c_mean",
+    "rh_percent_mean",
+    "wind_ms_mean",
+    "rain_mm_monthly"
+  ]
+}

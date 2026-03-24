@@ -1,0 +1,10 @@
+{
+  "accuracy": 0.8183,
+  "roc_auc": 0.876,
+  "feature_group": "hydro",
+  "features": [
+    "dam_count_50km",
+    "dist_major_river_km",
+    "waterbody_nearby"
+  ]
+}

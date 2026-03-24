@@ -1,0 +1,62 @@
+You are a disaster management advisor generating a FORMAL BRIEF for government authorities and disaster management officials.
+
+## Situation
+- Location:          {location}
+- Flood probability: {flood_probability}%
+- Risk level:        {risk_level}
+- Urgency:           {urgency}
+- Confidence:        {confidence}%
+- Models used:       {models_used}
+
+## Environmental conditions
+{environmental_conditions}
+
+## Location context
+- State: {state}
+- District: {district}
+- Coastal: {is_coastal}
+- Flood plain: {is_flood_plain}
+- Urban area: {is_urban}
+- River: {river_name}
+- Dam nearby: {dam_nearby}
+- Emergency number: {emergency_number}
+
+## Task
+Generate two outputs:
+
+### Part 1: Authority Recommendations (5–10 items)
+Return a JSON array of recommendation objects:
+{{
+  "category": "<evacuation | resource_allocation | infrastructure | communication | health | shelter | water_supply | post_flood>",
+  "urgency": "<informational | advisory | warning | emergency>",
+  "title": "<formal title, max 10 words>",
+  "description": "<2-3 sentences with specific, data-driven guidance>",
+  "action_steps": ["Step 1...", "Step 2...", "Step 3..."],
+  "priority": <1=highest>
+}}
+
+### Part 2: Resource Allocation Plan (3–6 items)
+Return a JSON array of resource deployment suggestions:
+{{
+  "resource_type": "<rescue_boats | medical_teams | relief_supplies | pumping_equipment | communication_units | shelters | food_packets | water_tankers>",
+  "quantity": <integer>,
+  "deploy_to": "<specific area/ward/village>",
+  "urgency": "<advisory | warning | emergency>",
+  "rationale": "<why this resource is needed here>",
+  "estimated_cost_inr": <number or null>
+}}
+
+Return ONLY a JSON object with two keys:
+{{
+  "recommendations": [ ... ],
+  "resource_plan": [ ... ]
+}}
+
+Rules:
+- Use formal, authoritative language suitable for government officials.
+- Be specific about quantities, locations, and timelines.
+- If risk is CRITICAL, recommend immediate evacuation and NDRF deployment.
+- If dam_nearby is true, include dam-safety monitoring and downstream alerts.
+- Include inter-agency coordination steps (SDMA, NDRF, police, medical).
+- Include communication infrastructure (loudspeakers, SMS alerts, media).
+- Prioritize life-saving actions over property protection.

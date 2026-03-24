@@ -1,0 +1,17 @@
+{
+  "accuracy": 0.9867,
+  "roc_auc": 0.999,
+  "feature_group": "weather_terrain",
+  "features": [
+    "rain_mm_weekly",
+    "temp_c_mean",
+    "rh_percent_mean",
+    "wind_ms_mean",
+    "rain_mm_monthly",
+    "lat",
+    "lon",
+    "elevation_m",
+    "slope_degree",
+    "terrain_type_encoded"
+  ]
+}
