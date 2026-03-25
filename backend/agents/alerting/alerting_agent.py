@@ -188,12 +188,20 @@ class AlertingAgent:
                 "state":             context.get("state", ""),
             }
 
-            # Compose public alert
+            # Extract recommendations from session (produced by RecommendationAgent)
+            raw_recs = session.get_artifact("recommendations")
+            recommendations: list = []
+            if isinstance(raw_recs, dict):
+                recommendations = raw_recs.get("recommendations", raw_recs.get("items", []))
+            elif isinstance(raw_recs, list):
+                recommendations = raw_recs
+
             public_content = await self._composer.compose(
                 severity=severity,
                 risk_data=risk_data,
                 location_data=location_data,
                 for_authority=False,
+                recommendations=recommendations,
             )
 
             # Compose authority alert (if escalated)
@@ -204,6 +212,7 @@ class AlertingAgent:
                     risk_data=risk_data,
                     location_data=location_data,
                     for_authority=True,
+                    recommendations=recommendations,
                 )
 
             # ── 5. Create alert record ────────────────────────────────────

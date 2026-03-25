@@ -50,6 +50,31 @@ class RecommendationAgent:
         self._location = LocationContextBuilder(self._gemini)
         self._engine   = RecommendationEngine(self._gemini)
 
+    def _get_regional_language(self, state: str, location: str = "") -> str:
+        """Maps Indian states or major cities to their primary regional language."""
+        # Check state first, then location name for common cities
+        s = (state or "").lower()
+        loc = (location or "").lower()
+        
+        if "tamil" in s or "chennai" in loc: return "Tamil"
+        if "kerala" in s or "kochi" in loc or "trivandrum" in loc: return "Malayalam"
+        if "karnataka" in s or "bangalore" in loc or "bengaluru" in loc: return "Kannada"
+        if "andhra" in s or "telangana" in s or "hyderabad" in s or "amaravati" in loc: return "Telugu"
+        if "bengal" in s or "kolkata" in loc: return "Bengali"
+        if "maharashtra" in s or "mumbai" in loc or "pune" in loc: return "Marathi"
+        if "gujarat" in s or "ahmedabad" in loc or "surat" in loc: return "Gujarati"
+        if "odisha" in s or "bhubaneswar" in loc: return "Odia"
+        if "punjab" in s or "amritsar" in loc or "ludhiana" in loc: return "Punjabi"
+        if "assam" in s or "guwahati" in loc: return "Assamese"
+        
+        # Hindi-speaking belt
+        if any(x in s for x in ("uttar", "bihar", "madhya", "rajasthan", "haryana", "delhi", "himachal", "uttarakhand", "jharkhand", "chhattisgarh")):
+            return "Hindi"
+        if any(x in loc for x in ("delhi", "patna", "lucknow", "jaipur", "bhopal", "ranchi", "raipur")):
+            return "Hindi"
+            
+        return "Hindi"  # Default fallback for India context
+
     # ── Public interface (called by Orchestrator) ─────────────────────────
 
     async def run(
@@ -59,10 +84,6 @@ class RecommendationAgent:
     ) -> RecommendationResult:
         """
         Main agent entry point — uses a single merged LLM call for all outputs.
-
-        All previously separate sub-agent calls (user profiling, location context,
-        recommendation generation, summary) are combined into one Gemini call to
-        minimise API quota usage.
         """
         session_id = session.session_id
         context    = session.context
@@ -100,7 +121,10 @@ class RecommendationAgent:
             env_str  = ", ".join(f"{k}={v}" for k, v in env_data.items() if k not in ("risk_level",))
 
             # ── 3. Single merged LLM call ─────────────────────────────────
-            prompt = f"""You are a flood disaster management AI assistant.
+            regional_lang = self._get_regional_language(state, location_name)
+            logger.info(f"[RecommendationAgent] Detected regional hint: {regional_lang} (state={state}, loc={location_name})")
+            
+            prompt = f"""You are a flood disaster management AI assistant for India.
 Generate a complete recommendation report in ONE JSON response.
 
 ## Flood Context
@@ -109,43 +133,43 @@ Generate a complete recommendation report in ONE JSON response.
 - Flood Probability: {flood_prob*100:.0f}%
 - Confidence: {confidence*100:.0f}%
 - Environmental readings: {env_str or 'N/A'}
+- Preferred Local Language: {regional_lang}
 
-## User Profile
-- User type: {user_type}
-- Has elderly: {has_elderly}
-- Has children: {has_children}
-- Has disability: {has_disability}
-- Has vehicle access: {vehicle_access}
+## Instructions
+1. For EVERY recommendation, you MUST provide BOTH English and the local language spoken in {location_name} (e.g. {regional_lang} for this area).
+2. Use the local language for all `_regional` fields in the schema. Do NOT leave them empty.
+3. Be specific to the geography of {location_name}.
+4. Output MUST be valid JSON (no prose, no markdown fences).
 
-## Output Schema (respond ONLY with valid JSON, no prose, no markdown fences)
+## Output Schema
 {{
   "recommendations": [
     {{
-      "id": <integer 1–10>,
       "category": "<safety|evacuation|infrastructure|resource|health|communication>",
       "urgency": "<emergency|warning|advisory|informational>",
-      "title": "<short action title>",
-      "description": "<1-2 sentence description>",
-      "action_steps": ["<step 1>", "<step 2>", "<step 3>"],
+      "title": "<short action title in English>",
+      "title_regional": "<SAME title translated into the local language of {location_name}>",
+      "description": "<1-2 sentence description in English>",
+      "description_regional": "<SAME description translated into the local language of {location_name}>",
+      "action_steps": ["<step 1 in English>", "<step 2>", "<step 3>"],
+      "action_steps_regional": ["<step 1 in local language>", "<step 2>", "<step 3>"],
       "priority": <integer 1–10>
     }}
   ],
   "safety_message": "<SMS-friendly safety message under 160 chars>",
   "summary": "<2-3 sentence overall summary for a {user_type} user>",
-  "emergency_contact": "<local emergency number or 112>",
+  "emergency_contact": "112",
   "risk_factors": ["<factor 1>", "<factor 2>"],
   "resources": [
     {{
       "resource_type": "<personnel|equipment|shelter|medical|food_water>",
       "quantity": <integer>,
-      "unit": "<string>",
-      "priority": "<high|medium|low>",
-      "location": "<where to deploy>"
+      "deploy_to": "{location_name}",
+      "urgency": "<emergency|warning|advisory|informational>",
+      "rationale": "<why needed>"
     }}
   ]
-}}
-
-Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific to {location_name}."""
+}}"""
 
             try:
                 raw = await self._gemini.generate_json(prompt)
@@ -159,12 +183,13 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
                 
             if not raw or not isinstance(raw, dict) or not raw.get("recommendations"):
                 warnings.append("Ollama failed — using emergency static fallback.")
-                raw = self._get_emergency_fallback(risk_level, location_name)
+                raw = self._get_emergency_fallback(risk_level, location_name, state)
             
-            # Final safety check to ensure 'raw' is a dict for subsequent .get() calls
             if not isinstance(raw, dict):
                 raw = {"recommendations": [], "resources": []}
-
+            
+            logger.info(f"[RecommendationAgent] Raw LLM response keys: {list(raw.keys())}")
+            
             # ── 4. Parse LLM output ───────────────────────────────────────
             from agents.recommendation.recommendation_schemas import (
                 Recommendation, RecommendationCategory, ResourceAllocation,
@@ -178,8 +203,11 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
                         category=RecommendationCategory(item.get("category", "safety")),
                         urgency=UrgencyLevel(item.get("urgency", "advisory")),
                         title=item.get("title", "Stay safe"),
+                        title_regional=item.get("title_regional"),
                         description=item.get("description", ""),
+                        description_regional=item.get("description_regional"),
                         action_steps=item.get("action_steps", []),
+                        action_steps_regional=item.get("action_steps_regional", []),
                         priority=item.get("priority", 5),
                     ))
                 except Exception:
@@ -212,7 +240,6 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
                 warnings.append("No recommendations generated — using defaults.")
                 recs = self._default_recommendations_simple(risk_level, location_name, emergency_number)
 
-            # ── 5. Build mock location context for schema compatibility ────
             loc_ctx = LocationContextModel(
                 location_name=location_name,
                 state=state,
@@ -221,7 +248,6 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
                 risk_factors=raw.get("risk_factors", []),
             )
 
-            # ── 6. Build user profile ─────────────────────────────────────
             profile = UserProfile(
                 user_type=UserType(user_type) if user_type in UserType._value2member_map_ else UserType.PUBLIC,
                 has_elderly=has_elderly,
@@ -232,7 +258,6 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
 
             urgency = self._overall_urgency(recs)
 
-            # ── 7. Store artifacts ────────────────────────────────────────
             session.store_artifact("recommendations", [r.model_dump() for r in recs])
             session.store_artifact("resource_plan", [r.model_dump() for r in resources])
             session.store_artifact("safety_message", safety_msg)
@@ -265,8 +290,6 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
                 status="failed",
                 errors=[str(exc)],
             )
-
-    # ── Helpers ───────────────────────────────────────────────────────────
 
     @staticmethod
     def _fallback_summary_text(
@@ -306,20 +329,14 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
             ),
         ]
 
-
-    # ── Environmental data extraction ─────────────────────────────────────
-
     @staticmethod
     def _extract_env_data(
         df:         Optional[pd.DataFrame],
         prediction: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Extracts recent environmental readings from the preprocessed dataset."""
         env: Dict[str, Any] = {}
-
         if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
             last = df.iloc[-1]
-
             env_cols = [
                 "rainfall_mm", "water_level_m", "discharge_m3s",
                 "soil_moisture_pct", "elevation_m", "temperature_c",
@@ -331,16 +348,12 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
                     val = last.get(col)
                     if pd.notna(val):
                         env[col] = round(float(val), 2)
-
         env["flood_probability"] = prediction.get("flood_probability", 0.5)
         env["risk_level"]        = prediction.get("risk_level", "MEDIUM")
         return env
 
-    # ── Overall urgency ───────────────────────────────────────────────────
-
     @staticmethod
     def _overall_urgency(recs: List[Recommendation]) -> UrgencyLevel:
-        """Returns the highest urgency level across all recommendations."""
         urgency_order = [
             UrgencyLevel.EMERGENCY,
             UrgencyLevel.WARNING,
@@ -352,8 +365,6 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
                 return u
         return UrgencyLevel.INFORMATIONAL
 
-    # ── Summary generation ────────────────────────────────────────────────
-
     async def _generate_summary(
         self,
         risk_level: str,
@@ -362,18 +373,15 @@ Generate 4–7 recommendations relevant to {risk_level} risk level. Be specific 
         profile:    UserProfile,
         location:   LocationContextModel,
     ) -> str:
-        """Generates a 2–3 sentence overall summary."""
         try:
             rec_titles = [f"{r.priority}. {r.title}" for r in recs[:5]]
-            prompt = f"""
-Summarize these flood recommendations in 2-3 sentences for a {profile.user_type.value} user.
+            prompt = f"""Summarize these flood recommendations in 2-3 sentences for a {profile.user_type.value} user.
 Location: {location.location_name} | Risk: {risk_level} | Probability: {flood_prob*100:.0f}%
 
 Top recommendations:
 {chr(10).join(rec_titles)}
 
-Be concise, direct, and action-oriented. No headers or bullets.
-"""
+Be concise, direct, and action-oriented. No headers or bullets."""
             summary = await self._gemini.generate(prompt, use_fast_model=True)
             return summary.strip() if summary else self._fallback_summary(
                 risk_level, flood_prob, recs, location
@@ -396,13 +404,11 @@ Be concise, direct, and action-oriented. No headers or bullets.
             f"Emergency contact: {location.emergency_number}."
         )
 
-    # ── Default fallback recommendations ──────────────────────────────────
-
     async def _try_ollama_fallback(self, prompt: str) -> Dict[str, Any]:
         """Attempts to generate recommendations using local Ollama (Llama3) via httpx."""
         import httpx
         try:
-            logger.info("[RecommendationAgent] Attempting local Ollama fallback...")
+            logger.info("[RecommendationAgent] Attempting local Ollama fallback (llama3:8b)...")
             url = "http://localhost:11434/api/generate"
             payload = {
                 "model": "llama3:8b",
@@ -411,18 +417,84 @@ Be concise, direct, and action-oriented. No headers or bullets.
                 "format": "json"
             }
             async with httpx.AsyncClient() as client:
-                resp = await client.post(url, json=payload, timeout=60.0)
+                resp = await client.post(url, json=payload, timeout=240.0)
                 if resp.status_code == 200:
                     data = resp.json()
+                    response_text = data.get("response", "{}")
+                    logger.info(f"[RecommendationAgent] Ollama produced {len(response_text)} chars.")
                     import json
-                    return json.loads(data.get("response", "{}"))
+                    return json.loads(response_text)
+                else:
+                    logger.warning(f"[RecommendationAgent] Ollama returned status {resp.status_code}")
         except Exception as e:
-            logger.warning(f"[RecommendationAgent] Ollama fallback failed: {str(e) or repr(e)}")
+            logger.warning(f"[RecommendationAgent] Ollama fallback failed: {str(e)}")
         return {}
 
-    def _get_emergency_fallback(self, risk_level: str, location: str) -> Dict[str, Any]:
-        """Provides a robust set of hardcoded recommendations for critical risk."""
-        is_high = risk_level in ["HIGH", "CRITICAL"]
+    def _get_emergency_fallback(self, risk_level: str, location: str, state: str = "") -> Dict[str, Any]:
+        """Provides hardcoded recommendations with regional support for common Indian languages."""
+        is_high = risk_level in ["HIGH", "CRITICAL", "RiskLevel.CRITICAL", "RiskLevel.HIGH"]
+        lang_name = self._get_regional_language(state, location)
+        
+        translations = {
+            "Tamil": {
+                "t1": "மேட்டுப்பகுதிக்கு வெளியேறவும்",
+                "d1": "தாழ்வான பகுதிகளில் வசிப்பவர்கள் உடனடியாக வெளியேற பரிந்துரைக்கப்படுகிறார்கள்.",
+                "s1": ["அத்தியாவசியப் பொருட்களை எடுத்துச் செல்லுங்கள்", "நியமிக்கப்பட்ட தப்பிக்கும் வழிகளைப் பின்பற்றுங்கள்", "உயர்ந்த இடத்திற்குச் செல்லுங்கள்"],
+                "t2": "அவசரக்கால பெட்டியை தயார் செய்யவும்",
+                "d2": "குறைந்தது 72 மணிநேரத்திற்கு தண்ணீர் மற்றும் மருத்துவ பொருட்கள் இருப்பதை உறுதி செய்யவும்.",
+                "s2": ["லைட்டுகளை சரிபார்க்கவும்", "பவர் பேங்குகளை சார்ஜ் செய்யவும்", "முக்கிய ஆவணங்களை பாதுகாக்கவும்"],
+                "t3": "சொத்துக்களை பாதுகாக்கவும்",
+                "d3": "விலை உயர்ந்த பொருட்களை மேல் தளத்திற்கு மாற்றவும், மின்சாரத்தை அணைக்கவும்.",
+                "s3": ["மணல் மூட்டைகளைப் பயன்படுத்தவும்", "மின் சாதனங்களை அன்ப்ளக் செய்யவும்", "வடிகால்களை சுத்தம் செய்யவும்"]
+            },
+            "Hindi": {
+                "t1": "ऊंचे स्थानों पर चले जाएं",
+                "d1": "निचले इलाकों या नदियों के पास रहने वाले लोगों को तुरंत सुरक्षित स्थानों पर जाने की सलाह दी जाती है।",
+                "s1": ["जरूरी सामान साथ रखें", "निर्धारित सुरक्षित रास्तों का पालन करें", "ऊंचे स्थानों की ओर बढ़ें"],
+                "t2": "आपातकालीन किट तैयार रखें",
+                "d2": "72 घंटों के लिए पानी, भोजन और दवाओं की व्यवस्था सुनिश्चित करें।",
+                "s2": ["टॉर्च की जाँच करें", "पावर बैंक चार्ज करें", "महत्वपूर्ण दस्तावेजों को सुरक्षित रखें"],
+                "t3": "संपत्ति की सुरक्षा",
+                "d3": "कीमती सामान ऊपरी मंजिलों पर ले जाएं और बिजली बंद कर दें।",
+                "s3": ["रेत की बोरियों का उपयोग करें", "बिजली के उपकरणों को अनप्लग करें", "नालियों को साफ रखें"]
+            },
+            "Malayalam": {
+                "t1": "താഴ്ന്ന പ്രദേശങ്ങളിൽ നിന്ന് ഒഴിഞ്ഞുമാറുക",
+                "d1": "വെള്ളപ്പൊക്ക സാധ്യതയുള്ള പ്രദേശങ്ങളിൽ താമസിക്കുന്നവർ ഉടൻ സുരക്ഷിത സ്ഥാനങ്ങളിലേക്ക് മാറണം.",
+                "s1": ["അത്യാവശ്യ സാധനങ്ങൾ കരുതുക", "നിർദ്ദിഷ്ട പാതകൾ പിന്തുടരുക", "ഉയർന്ന സ്ഥലത്തേക്ക് നീങ്ങുക"],
+                "t2": "അടിയന്തര കിറ്റ് തയ്യാറാക്കുക",
+                "d2": "72 മണിക്കൂറത്തേക്കുള്ള വെള്ളം, ഭക്ഷണം, മരുന്നുകൾ എന്നിവ ഉറപ്പാക്കുക.",
+                "s2": ["ടോർച്ച് പരിശോധിക്കുക", "പവർ ബാങ്ക് ചാർജ് ചെയ്യുക", "പ്രധാന രേഖകൾ സുരക്ഷിതമാക്കുക"],
+                "t3": "സ്വത്ത് സംരക്ഷിക്കുക",
+                "d3": "വിലപിടിപ്പുള്ള വസ്തുക്കൾ മുകളിലത്തെ നിലയിലേക്ക് മാറ്റുക, വൈദ്യുതി/ഗ്യാസ് ഓഫ് ചെയ്യുക.",
+                "s3": ["മണൽ ചാക്കുകൾ ഉപയോഗിക്കുക", "വൈദ്യുതി ബന്ധം വേർപെടുത്തുക", "ഓടകൾ വൃത്തിയാക്കുക"]
+            },
+            "Marathi": {
+                "t1": "सखल भागातून बाहेर पडा",
+                "d1": "नदीकाठच्या आणि सखल भागातील नागरिकांनी तातडीने सुरक्षित स्थळी स्थलांतर करावे.",
+                "s1": ["जीवनावश्यक वस्तू सोबत घ्या", "ठरवून दिलेल्या मार्गाचा वापर करा", "उंचावर जा"],
+                "t2": "आणीबाणीची किट तयार ठेवा",
+                "d2": "किमान ७२ तास पुरेल इतका अन्न, पाणी आणि औषधांचा साठा करा.",
+                "s2": ["बॅटरी तपासा", "पॉवर बँक चार्ज करा", "कागदपत्रे सुरक्षित ठेवा"],
+                "t3": "मालमत्तेचे रक्षण करा",
+                "d3": "किमती वस्तू वरच्या मजल्यावर हलवा आणि वीज/गॅस बंद करा.",
+                "s3": ["वाळूच्या पोत्यांचा वापर करा", "वीज बंद करा", "नाले स्वच्छ करा"]
+            },
+            "Bengali": {
+                "t1": "নিচু এলাকা থেকে সরে যান",
+                "d1": "বন্যাকবলিত বা নদী তীরের বাসিন্দাদের অবিলম্বে নিরাপদ স্থানে চলে যাওয়ার পরামর্শ দেওয়া হচ্ছে।",
+                "s1": ["প্রয়োজনীয় জিনিস গুছিয়ে নিন", "নির্দিষ্ট নিরাপদ পথ ব্যবহার করুন", "উঁচু স্থানে আশ্রয় নিন"],
+                "t2": "জরুরি সরঞ্জাম প্রস্তুত রাখুন",
+                "d2": "কমপক্ষে ৭২ ঘণ্টার জন্য পানীয় জল, খাবার এবং ওষুধ মজুদ রাখুন।",
+                "s2": ["টর্চ পরীক্ষা করুন", "পাওয়ার ব্যাঙ্ক চার্জ করুন", "গুরুত্বপূর্ণ নথি সুরক্ষিত রাখুন"],
+                "t3": "সম্পদ রক্ষা করুন",
+                "d3": "মূল্যবান জিনিস ওপরের তলায় সরিয়ে দিন এবং বিদ্যুৎ/গ্যাস সংযোগ বিচ্ছিন্ন করুন।",
+                "s3": ["বালির বস্তা ব্যবহার করুন", "বৈদ্যুতিক যন্ত্র খুলে দিন", "ড্রেনেজ পরিষ্কার করুন"]
+            }
+        }
+        
+        lang_data = translations.get(lang_name, {})
+
         return {
             "status": "partial",
             "summary": f"Emergency safety guidance for {location} due to {risk_level} flood risk.",
@@ -432,24 +504,33 @@ Be concise, direct, and action-oriented. No headers or bullets.
                     "category": "safety",
                     "urgency": "emergency" if is_high else "advisory",
                     "title": "Evacuate if in Low-Lying Areas",
+                    "title_regional": lang_data.get("t1"),
                     "description": "Immediate evacuation is recommended for residents in floodplains or near riverbanks.",
-                    "action_steps": ["Pack essentials", "Follow designated escape routes", "Move to higher ground"]
+                    "description_regional": lang_data.get("d1"),
+                    "action_steps": ["Pack essentials", "Follow designated escape routes", "Move to higher ground"],
+                    "action_steps_regional": lang_data.get("s1", [])
                 },
                 {
                     "id": 2,
                     "category": "safety",
                     "urgency": "warning",
                     "title": "Prepare Emergency Kit",
+                    "title_regional": lang_data.get("t2"),
                     "description": "Ensure you have water, non-perishable food, and medical supplies for at least 72 hours.",
-                    "action_steps": ["Check flashlights", "Charge power banks", "Secure important documents"]
+                    "description_regional": lang_data.get("d2"),
+                    "action_steps": ["Check flashlights", "Charge power banks", "Secure important documents"],
+                    "action_steps_regional": lang_data.get("s2", [])
                 },
                 {
                     "id": 3,
                     "category": "infrastructure",
                     "urgency": "advisory",
                     "title": "Protect Property",
+                    "title_regional": lang_data.get("t3"),
                     "description": "Move valuable items to upper floors and turn off electricity/gas if water enters.",
-                    "action_steps": ["Use sandbags if available", "Unplug appliances", "Clear drainage holes"]
+                    "description_regional": lang_data.get("d3"),
+                    "action_steps": ["Use sandbags if available", "Unplug appliances", "Clear drainage holes"],
+                    "action_steps_regional": lang_data.get("s3", [])
                 }
             ],
             "resources": [

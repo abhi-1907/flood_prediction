@@ -29,7 +29,7 @@ from utils.logger import logger
 
 # ── Default models ────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL = "gemini-2.5-flash"   # Available and stable on this API key
+DEFAULT_MODEL = "gemini-2.0-flash"   # Available and stable on this API key
 FAST_MODEL    = "gemini-2.0-flash-lite" # Higher-quota / faster for structural tasks
 
 # Retry settings

@@ -87,6 +87,12 @@ class Recommendation(BaseModel):
     title:        str
     description:  str                              # 2–3 sentence explanation
     action_steps: List[str] = Field(default_factory=list)   # Numbered steps
+    
+    # Regional language support
+    title_regional:        Optional[str] = None
+    description_regional:  Optional[str] = None
+    action_steps_regional: List[str]     = Field(default_factory=list)
+
     for_user_type: UserType  = UserType.PUBLIC
     priority:     int        = 1                   # 1 = highest
 
