@@ -41,6 +41,21 @@ from services.gemini_service import GeminiService, get_gemini_service
 from utils.logger import logger
 
 
+# ── Module-level singleton ────────────────────────────────────────────────────
+# All consumers (orchestrator, API routes) should use get_alerting_agent() so
+# they share the same SubscriberManager, AlertScheduler, and cooldown state.
+
+_alerting_agent_instance: Optional["AlertingAgent"] = None
+
+
+def get_alerting_agent() -> "AlertingAgent":
+    """Returns the process-wide AlertingAgent singleton."""
+    global _alerting_agent_instance
+    if _alerting_agent_instance is None:
+        _alerting_agent_instance = AlertingAgent()
+    return _alerting_agent_instance
+
+
 class AlertingAgent:
     """
     Orchestrates the full multi-channel alert delivery pipeline.

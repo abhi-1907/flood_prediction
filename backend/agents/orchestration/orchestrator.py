@@ -36,6 +36,7 @@ from agents.orchestration.memory import AgentMemory, AgentStep, MessageRole, Ses
 from agents.orchestration.planner import Planner
 from agents.orchestration.tool_registry import ToolRegistry, ToolResult
 from services.gemini_service import GeminiService
+from config import settings
 from utils.logger import logger
 
 
@@ -429,6 +430,8 @@ Rules for plan:
             {"step_index": 1, "agent": "data_ingestion", "action": "Ingest data", "inputs": {}, "depends_on": []},
             {"step_index": 2, "agent": "preprocessing", "action": "Preprocess", "inputs": {"dataset": "raw_dataset"}, "depends_on": [1]},
             {"step_index": 3, "agent": "prediction", "action": "Predict", "inputs": {"dataset": "processed_dataset"}, "depends_on": [2]},
+            # Safety agents are included — the orchestrator prunes them automatically
+            # if prediction fails or flood_probability < SAFETY_THRESHOLD (25%).
             {"step_index": 4, "agent": "recommendation", "action": "Generate recommendations", "inputs": {"prediction": "ensemble_prediction"}, "depends_on": [3]},
             {"step_index": 5, "agent": "simulation", "action": "Run flood simulation", "inputs": {"prediction": "ensemble_prediction"}, "depends_on": [3]},
             {"step_index": 6, "agent": "alerting", "action": "Evaluate for alerts", "inputs": {"prediction": "ensemble_prediction", "recommendations": "recommendations"}, "depends_on": [3, 4]},
@@ -437,7 +440,13 @@ Rules for plan:
         try:
             raw = await self._gemini.generate_json(prompt)
         except Exception as exc:
-            logger.warning(f"[Orchestrator] Unified startup call failed: {exc}. Using fallback.")
+            err_str = str(exc).upper()
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                logger.warning(f"[Orchestrator] Unified startup call failed (QUOTA EXHAUSTED). Enabling low-quota mode.")
+                session.set_context("low_quota_mode", True)
+            else:
+                logger.warning(f"[Orchestrator] Unified startup call failed: {exc}. Using fallback.")
+            
             session.set_context("user_type", user_type)
             session.set_context("original_query", user_query)
             return fallback_plan
@@ -532,25 +541,36 @@ Rules for plan:
 
                 # ── Dynamic Plan Pruning based on Prediction ──────────────
                 if step["agent"] == "prediction":
-                    prob = session.get_artifact("prediction_result", {}).get("flood_probability", 0.0)
-                    # Skip safety agents if risk is too low (< 40%)
-                    if prob < 0.4:
+                    # Correct lookup: Ensemble data is stored as ensemble_prediction
+                    ensemble = session.get_artifact("ensemble_prediction", {})
+                    prob = ensemble.get("flood_probability", 0.0) if isinstance(ensemble, dict) else 0.0
+
+                    # Also check if the prediction step itself failed
+                    prediction_step = self._find_agent_step(session, step)
+                    prediction_failed = (prediction_step is not None and prediction_step.status == StepStatus.FAILED)
+
+                    # Skip safety agents if prediction failed OR risk is too low
+                    if prediction_failed or prob < settings.SAFETY_THRESHOLD:
+                        reason = (
+                            f"Prediction step failed — no risk data"
+                            if prediction_failed
+                            else f"Risk too low ({prob:.0%}) < {settings.SAFETY_THRESHOLD:.0%}"
+                        )
                         logger.info(
-                            f"[Orchestrator] Risk too low ({prob:.2f}): Skipping safety agents "
-                            "(recommendation, simulation, alerting)."
+                            f"[Orchestrator] {reason}: Skipping safety agents "
+                            f"(recommendation, simulation, alerting)."
                         )
                         # Remove downstream safety steps from remaining
                         safety_agents = {"recommendation", "simulation", "alerting"}
                         remaining = [s for s in remaining if s["agent"] not in safety_agents]
-                        # Mark them as completed (skipped) so UI/logic doesn't hang
+                        # Mark them as SKIPPED so UI/logic doesn't hang
                         for s in plan:
                             if s["agent"] in safety_agents and s["step_index"] not in completed_indices:
                                 completed_indices.add(s["step_index"])
-                                # Also record in session memory as SKIPPED
                                 skip_step = session.add_step(
                                     agent_name=s["agent"],
                                     action=s["action"],
-                                    input_data={"reason": f"Risk too low ({prob:.2f})"}
+                                    input_data={"reason": reason},
                                 )
                                 skip_step.status = StepStatus.SKIPPED
 
@@ -888,10 +908,17 @@ Rules for plan:
         for reg in registrations:
             try:
                 import importlib
-                mod   = importlib.import_module(reg["module"])
-                cls   = getattr(mod, reg["class"])
-                inst  = cls()
-                fn    = getattr(inst, reg["method"])
+                mod = importlib.import_module(reg["module"])
+
+                # Use the module-level singleton for AlertingAgent so the orchestrator
+                # shares the same SubscriberManager as the API routes (same subscribers).
+                if reg["class"] == "AlertingAgent" and hasattr(mod, "get_alerting_agent"):
+                    inst = mod.get_alerting_agent()
+                else:
+                    cls  = getattr(mod, reg["class"])
+                    inst = cls()
+
+                fn = getattr(inst, reg["method"])
                 self._registry.register(
                     name=reg["name"],
                     schema=reg["schema"],

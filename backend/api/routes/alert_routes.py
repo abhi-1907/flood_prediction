@@ -17,23 +17,50 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from agents.alerting.alerting_agent import AlertingAgent
+from agents.alerting.alerting_agent import AlertingAgent, get_alerting_agent
 from agents.orchestration.memory import agent_memory
+from config import settings
 from models.alert_models import AlertSubscribeRequest, AlertTriggerRequest
 from services.gemini_service import get_gemini_service
 from utils.logger import logger
 
 router = APIRouter()
 
-# Singleton alerting agent (persists subscriber state across requests)
-_alerting_agent: Optional[AlertingAgent] = None
+# Seed the default subscriber once on module load (when the router is imported).
+# This uses the shared singleton so the orchestrator sees the same subscribers.
+def _seed_default_subscriber() -> None:
+    """
+    Auto-registers the system owner (SMTP_USER) as a subscriber on startup.
+    Coverage: country-wide India (2000km radius) for HIGH and CRITICAL alerts.
+    """
+    import os
+    email = settings.SMTP_USER
+    if not email:
+        logger.info("[AlertRoutes] No SMTP_USER set — skipping default subscriber seed.")
+        return
+
+    agent     = get_alerting_agent()
+    name      = os.getenv("ALERT_SUBSCRIBER_NAME", "System Admin")
+    location  = os.getenv("ALERT_LOCATION", "India")
+    latitude  = float(os.getenv("ALERT_LATITUDE",  "20.5937"))
+    longitude = float(os.getenv("ALERT_LONGITUDE", "78.9629"))
+    radius_km = float(os.getenv("ALERT_RADIUS_KM", "2000"))
+
+    sub_id = agent.subscriber_manager.add(
+        name=name,
+        email=email,
+        location=location,
+        latitude=latitude,
+        longitude=longitude,
+        radius_km=radius_km,
+        channels=["email"],
+        min_risk_level="HIGH",
+        is_authority=True,
+    )
+    logger.info(f"[AlertRoutes] Default subscriber seeded: {email} (id={sub_id}, radius={radius_km}km)")
 
 
-def _get_alerting_agent() -> AlertingAgent:
-    global _alerting_agent
-    if _alerting_agent is None:
-        _alerting_agent = AlertingAgent(get_gemini_service(), dry_run=False)
-    return _alerting_agent
+_seed_default_subscriber()
 
 
 # ── Additional schemas ────────────────────────────────────────────────────────
@@ -55,7 +82,7 @@ async def subscribe(request: AlertSubscribeRequest):
     Alerts will be sent via the chosen channels (email, SMS, push)
     when the flood risk meets or exceeds the subscriber's threshold.
     """
-    agent = _get_alerting_agent()
+    agent = get_alerting_agent()
     try:
         sub_id = agent.subscriber_manager.add(
             name=request.name,
@@ -85,7 +112,7 @@ async def subscribe(request: AlertSubscribeRequest):
 @router.delete("/unsubscribe/{subscriber_id}", summary="Unsubscribe from alerts")
 async def unsubscribe(subscriber_id: str):
     """Deactivates a subscriber (soft delete)."""
-    agent   = _get_alerting_agent()
+    agent   = get_alerting_agent()
     removed = agent.subscriber_manager.remove(subscriber_id)
     if not removed:
         raise HTTPException(status_code=404, detail=f"Subscriber '{subscriber_id}' not found.")
@@ -95,7 +122,7 @@ async def unsubscribe(subscriber_id: str):
 @router.get("/subscribers", summary="List all subscribers")
 async def list_subscribers():
     """Returns all active subscribers with their channel configurations."""
-    agent = _get_alerting_agent()
+    agent = get_alerting_agent()
     subs  = agent.subscriber_manager.list_all()
     return {
         "total": len(subs),
@@ -110,7 +137,7 @@ async def bulk_import(request: BulkImportRequest):
     Each item should have: name, location, latitude, longitude,
     and optionally: email, phone, push_token, channels, radius_km, min_risk_level.
     """
-    agent = _get_alerting_agent()
+    agent = get_alerting_agent()
     count = agent.subscriber_manager.import_subscribers(request.subscribers)
     return {
         "status":   "imported",
@@ -128,7 +155,7 @@ async def trigger_alert(request: AlertTriggerRequest):
     Bypasses the scheduler cooldown — useful for emergency overrides
     and testing.
     """
-    agent = _get_alerting_agent()
+    agent = get_alerting_agent()
     try:
         result = await agent.trigger_manual_alert(
             location=request.location,
@@ -161,7 +188,7 @@ async def alert_for_session(request: AlertSessionRequest):
     if not session:
         raise HTTPException(status_code=404, detail=f"Session '{request.session_id}' not found.")
 
-    agent = _get_alerting_agent()
+    agent = get_alerting_agent()
     try:
         result = await agent.run(session)
         return {
@@ -185,7 +212,7 @@ async def alert_for_session(request: AlertSessionRequest):
 @router.get("/active", summary="List active alerts")
 async def list_active_alerts():
     """Returns all currently active (non-expired) alerts."""
-    agent  = _get_alerting_agent()
+    agent  = get_alerting_agent()
     active = agent.scheduler.get_active_alerts()
     return {
         "active_count": len(active),

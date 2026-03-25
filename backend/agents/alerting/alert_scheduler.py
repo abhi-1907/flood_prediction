@@ -29,7 +29,7 @@ COOLDOWN_MINUTES = {
     AlertSeverity.GREEN:  360,    # 6 hours
     AlertSeverity.YELLOW: 120,    # 2 hours
     AlertSeverity.ORANGE: 60,     # 1 hour
-    AlertSeverity.RED:    15,     # 15 minutes
+    AlertSeverity.RED:    1,      # 1 minute (dev) — reduce alert fatigue in prod by raising to 15+
 }
 
 ESCALATION_MAP = {

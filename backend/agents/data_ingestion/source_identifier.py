@@ -111,6 +111,12 @@ class SourceIdentifier:
             logger.info("[SourceIdentifier] No gaps detected — skipping LLM reasoning.")
             return IngestionPlan(tasks=[], context=context, schema_report=schema_report)
 
+        # Optimization: In low-quota mode, skip Phase 2 (LLM) and use fallbacks
+        if context.get("low_quota_mode"):
+            logger.info("[SourceIdentifier] Low-quota mode: Skipping LLM reasoning and using rule-based fallbacks.")
+            fallback_tasks = self._fallback_tasks(rule_gaps, context)
+            return IngestionPlan(tasks=fallback_tasks, context=context, schema_report=schema_report)
+
         # Phase 2: LLM-enhanced reasoning (only if needed or complex gaps)
         # Note: If we are in "file upload" mode, we often prefer rules to save quota
         plan = await self._llm_reasoning(

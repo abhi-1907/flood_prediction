@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # ── Session management ────────────────────────────────────────────────
     SESSION_MAX_AGE_HOURS: int = 24   # Archive sessions older than this
 
+    # ── Orchestration ─────────────────────────────────────────────────────
+    SAFETY_THRESHOLD: float = 0.25     # Only trigger safety agents if risk > this (25%)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

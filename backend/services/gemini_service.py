@@ -29,8 +29,8 @@ from utils.logger import logger
 
 # ── Default models ────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL = "gemini-2.0-flash"   # Available and stable on this API key
-FAST_MODEL    = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"   # Available and stable on this API key
+FAST_MODEL    = "gemini-2.0-flash-lite" # Higher-quota / faster for structural tasks
 
 # Retry settings
 MAX_RETRIES      = 1   # Fail fast to hit fallbacks and save quota
