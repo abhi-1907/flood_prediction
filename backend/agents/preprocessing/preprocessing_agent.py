@@ -45,7 +45,7 @@ from agents.prediction.model_registry import ALL_FEATURES
 
 
 # Columns dropped before any preprocessing (non-feature / ID / target columns)
-DROP_BEFORE_PREPROCESS = ["country", "name", "week", "terrain_type", "flood_occurred"]
+DROP_BEFORE_PREPROCESS = ["country", "name", "week", "flood_occurred"]
 
 
 class PreprocessingAgent:
@@ -121,10 +121,23 @@ class PreprocessingAgent:
             df = df.drop(columns=drop_now)
             logger.info(f"[PreprocessingAgent] Dropped non-feature columns: {drop_now}")
         # Also remove any remaining string/object columns
+        # First, attempt to convert object columns to numeric (handles strings from frontend)
+        object_cols = df.select_dtypes(include="object").columns.tolist()
+        for col in object_cols:
+            try:
+                # errors='ignore' if it's truly a string column (like terrain_type)
+                df[col] = pd.to_numeric(df[col], errors='ignore')
+            except Exception:
+                pass
+
         string_cols = df.select_dtypes(include="object").columns.tolist()
         if string_cols:
-            df = df.drop(columns=string_cols)
-            logger.info(f"[PreprocessingAgent] Dropped string cols: {string_cols}")
+            # We keep 'terrain_type' for now as it might be encoded later, 
+            # but drop others like 'country', 'name'
+            to_drop = [c for c in string_cols if c not in ["terrain_type", "week"]]
+            if to_drop:
+                df = df.drop(columns=to_drop)
+                logger.info(f"[PreprocessingAgent] Dropped non-numeric string cols: {to_drop}")
 
         # ── 2. Initialise audit logger ────────────────────────────────────
         audit_logger = AuditLogger(session_id=session_id)
@@ -208,11 +221,12 @@ class PreprocessingAgent:
 
 
 
-            # ── 11. Compile audit report ──────────────────────────────────
             # Keep a copy of original shape for audit
-            original_df = session.get_artifact("raw_dataset") or pd.DataFrame()
+            original_df = session.get_artifact("raw_dataset")
+            if not isinstance(original_df, pd.DataFrame):
+                original_df = pd.DataFrame()
             audit = audit_logger.compile(
-                input_df=original_df if isinstance(original_df, pd.DataFrame) else pd.DataFrame(),
+                input_df=original_df,
                 output_df=df,
             )
             session.store_artifact("preprocessing_audit", audit)

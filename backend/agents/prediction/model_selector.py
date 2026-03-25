@@ -98,17 +98,49 @@ class ModelSelector:
         row_count:       int,
         has_time_series: bool,
         context:         Dict[str, Any],
+        session=None,   # Optional[Session] — avoids import cycle
     ) -> ModelSelectionPlan:
         """
         Returns an optimal ModelSelectionPlan.
 
-        Args:
-            loaded_models:   Dict of model availability.
-            feature_cols:    Feature columns in the preprocessed dataset.
-            row_count:       Number of rows in the dataset.
-            has_time_series: Whether the data has a temporal structure.
-            context:         Session context (user_type, intent, location).
+        If the orchestrator already ran a unified startup call that pre-computed
+        model config, reads it from the session to skip the LLM call entirely.
         """
+        # Fast path: pre-computed config from unified startup call
+        if session is not None:
+            precomputed = session.get_artifact("model_config")
+            if precomputed and isinstance(precomputed, dict):
+                logger.info("[ModelSelector] Using pre-computed model config (no LLM call).")
+                try:
+                    available = [mt for mt, loaded in loaded_models.items() if loaded]
+                    mode = PredictionMode(precomputed.get("mode", "classification"))
+                    models_raw = precomputed.get("models_to_use", [m.value for m in available])
+                    models_to_use = []
+                    for m in models_raw:
+                        try:
+                            mt = ModelType(m)
+                            if mt in available:
+                                models_to_use.append(mt)
+                        except ValueError:
+                            pass
+                    raw_weights = precomputed.get("weights", {})
+                    weights = {}
+                    for mt in (models_to_use or available):
+                        w = raw_weights.get(mt.value, DEFAULT_WEIGHTS.get(mt, 0.5))
+                        weights[mt] = float(w)
+                    total = sum(weights.values())
+                    if total > 0:
+                        weights = {mt: w / total for mt, w in weights.items()}
+                    return ModelSelectionPlan(
+                        models_to_use=models_to_use or available,
+                        weights=weights or DEFAULT_WEIGHTS,
+                        mode=mode,
+                        forecast_horizon=int(precomputed.get("forecast_horizon", 1)),
+                        rationale="Pre-computed by unified startup call.",
+                    )
+                except Exception as exc:
+                    logger.warning(f"[ModelSelector] Pre-computed config parse failed: {exc}. Falling back to LLM.")
+
         # Phase 1: rule-based model availability filter
         available = [mt for mt, loaded in loaded_models.items() if loaded]
         if not available:

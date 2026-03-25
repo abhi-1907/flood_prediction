@@ -1,12 +1,14 @@
 import React from "react";
-import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Link, Navigate } from "react-router-dom";
 import Navbar from "./components/layout/Navbar";
 import Sidebar from "./components/layout/Sidebar";
 import Dashboard from "./pages/Dashboard";
 import PredictionPage from "./pages/PredictionPage";
-import SimulationPage from "./pages/SimulationPage";
 import RecommendationsPage from "./pages/RecommendationsPage";
+import SimulationPage from "./pages/SimulationPage";
+import AlertingPage from "./pages/AlertingPage";
 import AlertsPage from "./pages/AlertsPage";
+import { PipelineProvider } from "./context/PipelineContext";
 
 /** 404 Not Found page */
 function NotFound() {
@@ -29,22 +31,27 @@ function NotFound() {
 function App() {
   return (
     <BrowserRouter>
-      <div className="app-shell">
-        <Navbar />
-        <div className="app-body">
-          <Sidebar />
-          <main className="app-main">
-            <Routes>
-              <Route path="/"                element={<Dashboard />}         />
-              <Route path="/predict"         element={<PredictionPage />}    />
-              <Route path="/simulation"      element={<SimulationPage />}    />
-              <Route path="/recommendations" element={<RecommendationsPage />} />
-              <Route path="/alerts"          element={<AlertsPage />}        />
-              <Route path="*"               element={<NotFound />}          />
-            </Routes>
-          </main>
+      <PipelineProvider>
+        <div className="app-shell">
+          <Navbar />
+          <div className="app-body">
+            <Sidebar />
+            <main className="app-main">
+              <Routes>
+                <Route path="/"                element={<Dashboard />}         />
+                <Route path="/predict"         element={<PredictionPage />}    />
+                <Route path="/recommendations" element={<RecommendationsPage />} />
+                <Route path="/simulation"      element={<SimulationPage />}    />
+                <Route path="/alerting"        element={<AlertingPage />}      />
+                <Route path="/alerts"          element={<AlertsPage />}        />
+                {/* Legacy redirect */}
+                <Route path="/pipeline"        element={<Navigate to="/predict" replace />} />
+                <Route path="*"               element={<NotFound />}           />
+              </Routes>
+            </main>
+          </div>
         </div>
-      </div>
+      </PipelineProvider>
     </BrowserRouter>
   );
 }

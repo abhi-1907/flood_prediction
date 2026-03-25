@@ -108,6 +108,12 @@ class Normalizer:
             if scale == ScalingStrategy.NONE:
                 continue
 
+            # ── Safety Guard: Never fit_transform on a 1-row dataset ─────
+            # (StandardScaler on 1 row results in all 0.0s)
+            if df.shape[0] <= 1:
+                # logger.debug(f"[Normalizer] Skipping scaling fit for 1-row inference: {col}")
+                continue
+
             before_mean = round(float(df[col].mean()), 4)
             before_std  = round(float(df[col].std()),  4)
 

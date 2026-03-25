@@ -51,6 +51,19 @@ LOCATION_KEYWORDS  = {"lat", "lon", "latitude", "longitude", "location",
                       "district", "state", "place", "city", "village"}
 
 
+# mapping aliases to standard system names
+COLUMN_MAPPING = {
+    "latitude":           ["lat", "latitude", "y", "coords_y"],
+    "longitude":          ["lon", "long", "longitude", "x", "coords_x"],
+    "rain_mm_weekly":     ["rain", "rainfall", "precip", "precipitation", "rain_mm", "weekly_rain", "weekly_precip"],
+    "rain_mm_monthly":    ["monthly_rain", "monthly_precip", "rain_monthly", "precip_monthly"],
+    "elevation_m":        ["elevation", "elev", "altitude", "alt", "dem", "height"],
+    "slope_degree":       ["slope", "slope_deg", "gradient"],
+    "dist_major_river_km":["river_dist", "dist_river", "distance_river", "river_km"],
+    "waterbody_nearby":   ["waterbody", "water_body", "nearby_water", "lake_nearby", "river_nearby"],
+    "terrain_type":       ["terrain", "land_use", "landcover", "land_type"],
+}
+
 class SchemaValidator:
     """
     Validates and profiles the schema of any incoming data source.
@@ -68,16 +81,18 @@ class SchemaValidator:
         self,
         file_bytes: bytes,
         filename: str = "upload.csv",
+        context: Optional[Dict[str, Any]] = None,
     ) -> SchemaReport:
         """Parses a CSV file and produces a SchemaReport."""
         try:
             df = pd.read_csv(io.BytesIO(file_bytes), low_memory=False)
-            return self._analyse_dataframe(df, DataSourceType.USER_CSV)
+            df = self._rename_columns(df)
+            return self._analyse_dataframe(df, DataSourceType.USER_CSV, context)
         except Exception as exc:
             logger.error(f"[SchemaValidator] CSV parse error: {exc}")
             return self._empty_report(notes=f"CSV parse error: {exc}")
 
-    def validate_json(self, data: Union[dict, list]) -> SchemaReport:
+    def validate_json(self, data: Union[dict, list], context: Optional[Dict[str, Any]] = None) -> SchemaReport:
         """Analyses a JSON dict or list-of-dicts and produces a SchemaReport."""
         try:
             if isinstance(data, dict):
@@ -86,14 +101,16 @@ class SchemaValidator:
                 df = pd.DataFrame(data)
             else:
                 return self._empty_report(notes="Unsupported JSON structure.")
-            return self._analyse_dataframe(df, DataSourceType.USER_JSON)
+            df = self._rename_columns(df)
+            return self._analyse_dataframe(df, DataSourceType.USER_JSON, context)
         except Exception as exc:
             logger.error(f"[SchemaValidator] JSON parse error: {exc}")
             return self._empty_report(notes=f"JSON parse error: {exc}")
 
-    def validate_dataframe(self, df: pd.DataFrame) -> SchemaReport:
-        """Analyses an already-loaded DataFrame."""
-        return self._analyse_dataframe(df, DataSourceType.USER_CSV)
+    def validate_dataframe(self, df: pd.DataFrame, context: Optional[Dict[str, Any]] = None) -> SchemaReport:
+        """Analyses an already-loaded DataFrame with optional context."""
+        df = self._rename_columns(df)
+        return self._analyse_dataframe(df, DataSourceType.USER_CSV, context)
 
     def validate_text(self, text: str) -> SchemaReport:
         """
@@ -120,17 +137,22 @@ class SchemaValidator:
 
     # ── Core analysis ─────────────────────────────────────────────────────
 
+    def map_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Public helper to get a renamed DataFrame."""
+        return self._rename_columns(df)
+
     def _analyse_dataframe(
         self,
         df: pd.DataFrame,
         source: DataSourceType,
+        context: Optional[Dict[str, Any]] = None,
     ) -> SchemaReport:
         """Profiles a DataFrame and returns a SchemaReport."""
         fields        = self._analyse_fields(df)
         category      = self._detect_category(df)
-        missing       = self._detect_missing_categories(df, category)
+        missing       = self._detect_missing_categories(df, category, context)
         has_timestamp = self._has_timestamp(df)
-        has_location  = self._has_location(df)
+        has_location  = self._has_location(df) or self._has_context_location(context)
 
         logger.info(
             f"[SchemaValidator] Analysed {len(df)} rows × {len(df.columns)} cols | "
@@ -147,6 +169,29 @@ class SchemaValidator:
             has_timestamp=has_timestamp,
             has_location=has_location,
         )
+
+    def _rename_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Maps common aliases in the DataFrame to standard system names."""
+        rename_map = {}
+        cols = [c.lower().strip() for c in df.columns]
+        
+        for standard, aliases in COLUMN_MAPPING.items():
+            for alias in aliases:
+                if alias in cols:
+                    # Find original casing
+                    orig_idx = cols.index(alias)
+                    orig_name = df.columns[orig_idx]
+                    rename_map[orig_name] = standard
+                    break
+        
+        if rename_map:
+            logger.info(f"[SchemaValidator] Renaming columns: {rename_map}")
+            return df.rename(columns=rename_map)
+        return df
+
+    def _has_context_location(self, context: Optional[Dict[str, Any]]) -> bool:
+        if not context: return False
+        return bool(context.get("latitude") and context.get("longitude"))
 
     def _analyse_fields(self, df: pd.DataFrame) -> List[FieldReport]:
         """Produces a FieldReport for every column in the DataFrame."""
@@ -183,10 +228,11 @@ class SchemaValidator:
     # ── Category detection ────────────────────────────────────────────────
 
     def _detect_category(self, df: pd.DataFrame) -> DataCategory:
-        cols = {c.lower().replace(" ", "_") for c in df.columns}
-        has_rainfall = bool(cols & RAINFALL_KEYWORDS)
-        has_hydro    = bool(cols & HYDRO_KEYWORDS)
-        has_terrain  = bool(cols & TERRAIN_KEYWORDS)
+        cols = [c.lower().replace(" ", "_") for c in df.columns]
+        
+        has_rainfall = any(any(kw in c for kw in RAINFALL_KEYWORDS) for c in cols)
+        has_hydro    = any(any(kw in c for kw in HYDRO_KEYWORDS) for c in cols)
+        has_terrain  = any(any(kw in c for kw in TERRAIN_KEYWORDS) for c in cols)
 
         count = sum([has_rainfall, has_hydro, has_terrain])
         if count >= 2:
@@ -205,16 +251,31 @@ class SchemaValidator:
         self,
         df: pd.DataFrame,
         present: DataCategory,
+        context: Optional[Dict[str, Any]] = None,
     ) -> List[DataCategory]:
-        """Returns which major data categories are absent from the DataFrame."""
-        cols = {c.lower().replace(" ", "_") for c in df.columns}
+        """Returns which data categories are absent from BOTH DataFrame and Context."""
+        cols = [c.lower().replace(" ", "_") for c in df.columns]
+        ctx = context or {}
         missing = []
-        if not (cols & RAINFALL_KEYWORDS):
+        
+        # RAINFALL check
+        has_rain_df = any(any(kw in c for kw in RAINFALL_KEYWORDS) for c in cols)
+        has_rain_ctx = ctx.get("rain_mm_weekly") is not None or ctx.get("rain_mm_monthly") is not None
+        if not (has_rain_df or has_rain_ctx):
             missing.append(DataCategory.RAINFALL)
-        if not (cols & HYDRO_KEYWORDS):
+            
+        # HYDRO check
+        has_hydro_df = any(any(kw in c for kw in HYDRO_KEYWORDS) for c in cols)
+        has_hydro_ctx = ctx.get("dist_major_river_km") is not None or ctx.get("waterbody_nearby") is not None
+        if not (has_hydro_df or has_hydro_ctx):
             missing.append(DataCategory.HYDRO)
-        if not (cols & TERRAIN_KEYWORDS):
+            
+        # TERRAIN check
+        has_terrain_df = any(any(kw in c for kw in TERRAIN_KEYWORDS) for c in cols)
+        has_terrain_ctx = any(ctx.get(k) is not None for k in ["elevation_m", "slope_degree", "terrain_type"])
+        if not (has_terrain_df or has_terrain_ctx):
             missing.append(DataCategory.TERRAIN)
+            
         return missing
 
     # ── Helpers ───────────────────────────────────────────────────────────

@@ -96,22 +96,18 @@ class StrategySelector:
             f"{df.shape[1]} columns"
         )
 
-        # Phase 1: rule-based profiling
+        # Phase 1: rule-based profiling (no LLM call — saves quota)
         profile = self._profile_dataframe(df)
         rule_strategy = self._rule_based_strategy(df, profile)
 
-        # Phase 2: LLM enhancement
-        llm_strategy = await self._llm_enhance(df, profile, rule_strategy, session_context)
-
         logger.info(
-            f"[StrategySelector] Final strategy: "
-            f"char={llm_strategy.dataset_character} | "
-            f"impute={llm_strategy.global_imputation} | "
-            f"outlier={llm_strategy.global_outlier} | "
-            f"scale={llm_strategy.global_scaling} | "
-            f"ts={llm_strategy.format_time_series}"
+            f"[StrategySelector] Strategy (rule-based): "
+            f"char={rule_strategy.dataset_character} | "
+            f"impute={rule_strategy.global_imputation} | "
+            f"outlier={rule_strategy.global_outlier} | "
+            f"scale={rule_strategy.global_scaling}"
         )
-        return llm_strategy
+        return rule_strategy
 
     # ── Phase 1: Rule-based profiling ────────────────────────────────────
 
@@ -127,7 +123,7 @@ class StrategySelector:
                 "unique_pct": round(series.nunique() / max(len(series), 1) * 100, 2),
             }
 
-            if pd.api.types.is_numeric_dtype(series):
+            if pd.api.types.is_numeric_dtype(series) and series.dtype != bool:
                 non_null = series.dropna()
                 if len(non_null) > 0:
                     p.update({
@@ -144,6 +140,13 @@ class StrategySelector:
                         ),
                         "is_near_zero_variance": bool(non_null.var() < LOW_VARIANCE_THR),
                     })
+            elif series.dtype == bool:
+                # Boolean columns: treat as binary categorical
+                p.update({
+                    "is_binary": True,
+                    "true_pct": round(float(series.mean() * 100), 2),
+                    "is_near_zero_variance": bool(series.var() < LOW_VARIANCE_THR),
+                })
             profile[col] = p
 
         # Dataset has 'week' column (YYYY-MM) instead of 'date'
@@ -220,7 +223,7 @@ class StrategySelector:
             elif outlier_count > 0:
                 scaling = ScalingStrategy.ROBUST
             else:
-                scaling = ScalingStrategy.STANDARD
+                scaling = ScalingStrategy.NONE
 
             col_strategies.append(ColumnStrategy(
                 column=col,
@@ -234,7 +237,7 @@ class StrategySelector:
             dataset_character=char,
             global_imputation=ImputationStrategy.MEDIAN,
             global_outlier=OutlierStrategy.CLIP,
-            global_scaling=ScalingStrategy.STANDARD if not has_date else ScalingStrategy.ROBUST,
+            global_scaling=ScalingStrategy.NONE,
             column_strategies=col_strategies,
             engineer_features=True,
             format_time_series=has_date,

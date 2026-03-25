@@ -221,42 +221,50 @@ class PredictionExplainer:
         key_factors:    List[str],
         context:        Dict[str, Any],
     ) -> Optional[str]:
-        """Asks Gemini to produce a natural-language explanation."""
-        try:
-            top_features = [
-                {"feature": c.feature, "value": c.value, "impact_pct": round(c.contribution * 100, 1)}
-                for c in contributions[:5]
-            ]
+        """Generates a natural-language narrative using a rule-based template.
 
-            prompt = f"""
-You are an AI flood prediction assistant explaining a prediction result to a user.
+        Previously an LLM call — replaced with a template to save API quota.
+        """
+        location = context.get("location", "the target area")
+        prob     = ensemble.flood_probability * 100
+        risk     = ensemble.risk_level.value.upper()
+        conf     = ensemble.confidence * 100
+        top      = contributions[:3]
 
-## Prediction
-- Location:          {context.get('location', 'Unknown')}
-- Flood probability: {ensemble.flood_probability*100:.1f}%
-- Risk level:        {ensemble.risk_level.value}
-- Confidence:        {ensemble.confidence*100:.0f}%
-- 95% CI:           [{ensemble.uncertainty_band[0]*100:.1f}%–{ensemble.uncertainty_band[1]*100:.1f}%]
-- Models used:       {[m.value for m in ensemble.models_used]}
-- User type:         {context.get('user_type', 'general')}
+        # Build factor sentence
+        factor_parts = []
+        for c in top:
+            direction = "elevated" if c.contribution > 0 else "reduced"
+            factor_parts.append(f"{c.feature} ({direction} risk)")
+        factor_str = ", ".join(factor_parts) if factor_parts else "available sensor data"
 
-## Top contributing factors
-{json.dumps(top_features, indent=2)}
+        # Risk-level advisory
+        if ensemble.risk_level.value in ("critical", "high"):
+            advisory = (
+                " ⚠️ Residents in low-lying areas should take precautionary measures "
+                "and monitor official flood warnings closely."
+            )
+        elif ensemble.risk_level.value == "medium":
+            advisory = " Stay alert and monitor local weather updates."
+        else:
+            advisory = " No immediate action required, but continue to monitor conditions."
 
-## Task
-Write a 3–5 sentence explanation of this prediction in clear, non-technical language.
-- Address why the risk is at this level
-- Mention the top 2–3 factors and their real-world meaning
-- If risk is HIGH or CRITICAL, include a brief safety advisory
-- If confidence is low (<50%), note that the prediction has uncertainty
-- Be direct and actionable. Do NOT use headers or bullet points.
-"""
-            narrative = await self._gemini.generate(prompt, use_fast_model=True)
-            return narrative.strip() if narrative else None
+        conf_note = ""
+        if conf < 50:
+            conf_note = (
+                f" Note: model confidence is low ({conf:.0f}%), "
+                "so treat this as a preliminary estimate."
+            )
 
-        except Exception as exc:
-            logger.warning(f"[PredictionExplainer] LLM narrative failed: {exc}")
-            return None
+        narrative = (
+            f"The flood prediction model estimates a {prob:.1f}% probability of flooding "
+            f"for {location}, placing it in the {risk} risk category. "
+            f"The primary contributing factors are {factor_str}. "
+            f"This prediction was generated with {conf:.0f}% confidence by "
+            f"{len(ensemble.models_used)} model(s)."
+            f"{advisory}{conf_note}"
+        )
+        return narrative
 
     # ── Confidence note ───────────────────────────────────────────────────
 

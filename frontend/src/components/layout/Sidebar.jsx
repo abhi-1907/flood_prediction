@@ -9,17 +9,18 @@ const NAV = [
     ],
   },
   {
-    section: "AI Pipeline",
+    section: "AI Agents",
     links: [
-      { to: "/predict",        icon: "🧠", label: "Prediction"      },
-      { to: "/simulation",     icon: "🗺️",  label: "Simulation"      },
-      { to: "/recommendations",icon: "💡", label: "Recommendations" },
+      { to: "/predict",         icon: "🧠", label: "Prediction"      },
+      { to: "/recommendations", icon: "💡", label: "Recommendations" },
+      { to: "/simulation",      icon: "🗺️", label: "Simulation"      },
+      { to: "/alerting",        icon: "🔔", label: "Alerting"        },
     ],
   },
   {
     section: "Operations",
     links: [
-      { to: "/alerts",         icon: "🔔", label: "Alerts"          },
+      { to: "/alerts",        icon: "🚨", label: "Alert Manager"   },
     ],
   },
 ];

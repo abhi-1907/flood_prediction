@@ -635,3 +635,10 @@ tbody tr:hover { background: var(--bg-hover); }
 .overflow-hidden { overflow: hidden; }
 .rounded { border-radius: var(--radius); }
 .rounded-full { border-radius: 9999px; }
+
+/* ── Pipeline Tracker ──────────────────────────────────────────────────────── */
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 8px var(--primary-glow); opacity: 1; }
+  50%       { box-shadow: 0 0 20px var(--primary-glow); opacity: 0.7; }
+}
+

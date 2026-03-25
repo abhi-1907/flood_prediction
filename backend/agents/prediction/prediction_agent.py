@@ -141,7 +141,7 @@ class PredictionAgent:
         )
 
         try:
-            result = await self._predict_from_df(df, session_id, context, warnings, errors)
+            result = await self._predict_from_df(df, session, context, warnings, errors)
             return result
         except Exception as exc:
             logger.exception(f"[PredictionAgent] Unhandled error: {exc}")
@@ -206,19 +206,21 @@ class PredictionAgent:
             "original_query": f"Quick prediction for {location}",
         }
 
-        return await self._predict_from_df(df, session_id, context, [], [])
+        return await self._predict_from_df(df, None, context, [], [])
 
     # ── Internal prediction engine ─────────────────────────────────────────
 
     async def _predict_from_df(
         self,
         df:         pd.DataFrame,
-        session_id: str,
+        session:    Any,
         context:    Dict[str, Any],
         warnings:   List[str],
         errors:     List[str],
     ) -> PredictionResult:
         """Core prediction logic shared by run() and quick_predict()."""
+        
+        session_id = session.session_id if session and hasattr(session, "session_id") else "quick_predict_session"
 
         # ── 1. Load models ────────────────────────────────────────────────
         if not self._models_loaded:
@@ -243,6 +245,7 @@ class PredictionAgent:
             row_count=len(df),
             has_time_series=has_time_series,
             context={**context, "feature_group": best_group},
+            session=session,
         )
 
         if not plan.models_to_use:

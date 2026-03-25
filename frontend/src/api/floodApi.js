@@ -3,11 +3,16 @@
  */
 import axios from "axios";
 
+// Dynamically resolve backend URL so it works on both localhost and 127.0.0.1
+const API_BASE = import.meta.env.VITE_API_URL ||
+  `${window.location.protocol}//${window.location.hostname}:8000`;
+
 const api = axios.create({
-  baseURL: "http://localhost:8000",
+  baseURL: API_BASE,
   timeout: 60000,
   headers: { "Content-Type": "application/json" },
 });
+
 
 // Response interceptor – unwrap data
 api.interceptors.response.use(

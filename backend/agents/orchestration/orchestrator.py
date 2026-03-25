@@ -41,7 +41,7 @@ from utils.logger import logger
 
 # ── Retry configuration ───────────────────────────────────────────────────────
 
-MAX_RETRIES     = 2       # Max automatic retries for a transient step failure
+MAX_RETRIES     = 0       # Max automatic retries for a transient step failure (GeminiService handles network retries)
 RETRY_BASE_SECS = 2.0     # Base delay for exponential backoff (2, 4 seconds)
 STEP_TIMEOUT    = 300.0   # Seconds before a single agent step times out
 
@@ -106,35 +106,66 @@ class OrchestratorAgent:
         )
 
         try:
-            # ── 2. Enrich context ─────────────────────────────────────────
-            await self._ctx_mgr.initialise(
-                session,
-                user_query=user_query,
-                uploaded_columns=uploaded_columns,
-            )
-            self._ctx_mgr.update_user_type(session, user_type)
+            # ── Optimization: Bypass LLM planning for file uploads ────────
+            if uploaded_file_bytes or uploaded_columns:
+                logger.info("[Orchestrator] File upload detected — using hardcoded 1-call path.")
+                
+                # 1. Hardcoded pipeline
+                plan = [
+                    {"step_index": 1, "agent": "data_ingestion", "action": "Ingest flood data", "inputs": {}, "depends_on": []},
+                    {"step_index": 2, "agent": "preprocessing", "action": "Preprocess data", "inputs": {"dataset": "raw_dataset"}, "depends_on": [1]},
+                    {"step_index": 3, "agent": "prediction", "action": "Predict flood risk", "inputs": {"dataset": "processed_dataset"}, "depends_on": [2]},
+                    {"step_index": 4, "agent": "recommendation", "action": "Generate recommendations", "inputs": {"dataset": "processed_dataset"}, "depends_on": [3]},
+                ]
+                
+                # 2. Hardcoded Fetch Plan (Assume user data is primary)
+                # This ensures SourceIdentifier skips its Gemini call
+                fetch_plan = [
+                    {
+                        "source": "uploaded_file",
+                        "category": "mixed",
+                        "priority": 1,
+                        "params": {},
+                        "rationale": "Using user-uploaded CSV as primary data source."
+                    }
+                ]
+                session.store_artifact("fetch_plan", fetch_plan)
 
-            # ── 3. Classify intent ────────────────────────────────────────
-            intent_meta = await self._planner.classify_intent(user_query)
-            session.set_context("intent", intent_meta)
-            logger.info(f"[Orchestrator] Intent: {intent_meta}")
+                # 3. Hardcoded Model Config (Rule-based weights)
+                # This ensures ModelSelector skips its Gemini call
+                model_config = {
+                    "mode": "classification",
+                    "forecast_horizon": 1,
+                    "models_to_use": ["xgboost", "random_forest"],
+                    "weights": {"xgboost": 0.55, "random_forest": 0.45}
+                }
+                session.store_artifact("model_config", model_config)
+                
+                # 4. Extract initial context
+                session.set_context("original_query", user_query)
+                session.set_context("intent", "data_upload")
+                session.set_context("wants_recommendations", True)
+                
+                # Location hints
+                if uploaded_columns:
+                    col_map = {c.lower(): c for c in uploaded_columns}
+                    if any(k in col_map for k in ["lat", "latitude", "lon", "longitude"]):
+                        session.set_context("has_location", True)
+
+            else:
+                # ── Standard unified single Gemini startup call ───────────
+                plan = await self._unified_startup_call(
+                    session, user_query, user_type, uploaded_columns
+                )
+                logger.info(
+                    f"[Orchestrator] Unified startup done. Plan: "
+                    + ", ".join(f"{s['step_index']}:{s['agent']}" for s in plan)
+                )
 
             # ── 4. Store uploaded file in session artifacts ────────────────
             if uploaded_file_bytes:
                 session.store_artifact("uploaded_file_bytes", uploaded_file_bytes)
                 session.store_artifact("uploaded_columns", uploaded_columns or [])
-
-            # ── 5. Generate execution plan ────────────────────────────────
-            available_data = {
-                "uploaded_columns": uploaded_columns,
-                "location": session.get_context("location"),
-                "data_types": session.get_context("data_types", []),
-            }
-            plan = await self._planner.create_plan(session, available_data)
-            logger.info(
-                f"[Orchestrator] Plan: "
-                + ", ".join(f"{s['step_index']}:{s['agent']}" for s in plan)
-            )
 
             # ── 6. Execute plan ───────────────────────────────────────────
             await self._execute_plan(session, plan)
@@ -169,6 +200,7 @@ class OrchestratorAgent:
         uploaded_file_bytes: Optional[bytes] = None,
         uploaded_columns:    Optional[List[str]] = None,
         user_type:           str = "general_public",
+        initial_context:     Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Streaming variant of `run()`.
@@ -180,24 +212,68 @@ class OrchestratorAgent:
             {"event": "step_started" | "step_done" | "plan_ready" | "complete",
              "data": {...}}
         """
-        session = self._memory.create_session(user_query=user_query)
-        session.set_context("user_type", user_type)
+        session = self._memory.create_session(
+            user_query=user_query,
+            initial_context={"user_type": user_type, **(initial_context or {})},
+        )
 
         try:
-            await self._ctx_mgr.initialise(session, user_query, uploaded_columns)
-            intent_meta = await self._planner.classify_intent(user_query)
-            session.set_context("intent", intent_meta)
+            # ── Optimization: Bypass LLM planning for file uploads ────────
+            if uploaded_file_bytes or uploaded_columns:
+                logger.info("[Orchestrator] File upload detected — using hardcoded 1-call path.")
+                
+                # 1. Hardcoded pipeline
+                plan = [
+                    {"step_index": 1, "agent": "data_ingestion", "action": "Ingest flood data", "inputs": {}, "depends_on": []},
+                    {"step_index": 2, "agent": "preprocessing", "action": "Preprocess data", "inputs": {"dataset": "raw_dataset"}, "depends_on": [1]},
+                    {"step_index": 3, "agent": "prediction", "action": "Predict flood risk", "inputs": {"dataset": "processed_dataset"}, "depends_on": [2]},
+                    {"step_index": 4, "agent": "recommendation", "action": "Generate recommendations", "inputs": {"dataset": "processed_dataset"}, "depends_on": [3]},
+                ]
+                
+                # 2. Hardcoded Fetch Plan (Assume user data is primary)
+                # This ensures SourceIdentifier skips its Gemini call
+                fetch_plan = [
+                    {
+                        "source": "uploaded_file",
+                        "category": "mixed",
+                        "priority": 1,
+                        "params": {},
+                        "rationale": "Using user-uploaded CSV as primary data source."
+                    }
+                ]
+                session.store_artifact("fetch_plan", fetch_plan)
+
+                # 3. Hardcoded Model Config (Rule-based weights)
+                # This ensures ModelSelector skips its Gemini call
+                model_config = {
+                    "mode": "classification",
+                    "forecast_horizon": 1,
+                    "models_to_use": ["xgboost", "random_forest"],
+                    "weights": {"xgboost": 0.55, "random_forest": 0.45}
+                }
+                session.store_artifact("model_config", model_config)
+                
+                # 4. Extract initial context
+                session.set_context("user_type", user_type)
+                session.set_context("original_query", user_query)
+                session.set_context("intent", "data_upload")
+                session.set_context("wants_recommendations", True)
+                
+                # Location hints
+                if uploaded_columns:
+                    col_map = {c.lower(): c for c in uploaded_columns}
+                    if any(k in col_map for k in ["lat", "latitude", "lon", "longitude"]):
+                        session.set_context("has_location", True)
+
+            else:
+                # ── Standard unified single Gemini startup call ───────────
+                plan = await self._unified_startup_call(
+                    session, user_query, user_type, uploaded_columns
+                )
 
             if uploaded_file_bytes:
                 session.store_artifact("uploaded_file_bytes", uploaded_file_bytes)
 
-            plan = await self._planner.create_plan(
-                session,
-                available_data={
-                    "uploaded_columns": uploaded_columns,
-                    "location": session.get_context("location"),
-                },
-            )
             yield {"event": "plan_ready", "data": {"steps": len(plan), "plan": plan}}
 
             for step_dict in plan:
@@ -211,12 +287,24 @@ class OrchestratorAgent:
                 }
                 await self._execute_single_step(session, step_dict, attempt=0)
                 agent_step = self._find_agent_step(session, step_dict)
+
+                # Serialize agent result so it can be sent over SSE as JSON
+                step_result = None
+                if agent_step and agent_step.output_data is not None:
+                    raw_result = agent_step.output_data
+                    if hasattr(raw_result, "model_dump"):
+                        raw_result = raw_result.model_dump()
+                    elif hasattr(raw_result, "dict"):
+                        raw_result = raw_result.dict()
+                    step_result = raw_result if isinstance(raw_result, dict) else None
+
                 yield {
                     "event": "step_done",
                     "data": {
                         "step_index": step_dict["step_index"],
                         "agent": step_dict["agent"],
                         "status": agent_step.status if agent_step else "unknown",
+                        "result": step_result,
                     },
                 }
 
@@ -227,7 +315,174 @@ class OrchestratorAgent:
         finally:
             self._memory.archive_session(session.session_id)
 
-    # ── Plan execution ────────────────────────────────────────────────────
+    # ── Unified startup call (1 LLM call replaces context + plan + model + source) ─
+
+    async def _unified_startup_call(
+        self,
+        session,
+        user_query:       str,
+        user_type:        str,
+        uploaded_columns: Optional[List[str]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Single Gemini call that replaces 3-4 previously separate LLM calls:
+          1. ContextManager.initialise()  → metadata + geocode + intent
+          2. Planner.create_plan()        → execution steps
+          3. ModelSelector._llm_refine()  → model weights (pre-computed, saved to session)
+          4. SourceIdentifier._llm_reasoning() → fetch plan (pre-computed, saved to session)
+
+        Returns the parsed execution plan (list of step dicts) and stores all
+        other outputs into the session for downstream agents to consume.
+        """
+        cols_str = ", ".join(uploaded_columns[:20]) if uploaded_columns else "none"
+        has_upload = bool(uploaded_columns)
+
+        # Identify fields already satisfied by the user (manual/textbox)
+        manual_inputs = [
+            k for k in [
+                "rain_mm_weekly", "rain_mm_monthly", "temp_c_mean", "rh_percent_mean", "wind_ms_mean",
+                "elevation_m", "slope_degree", "terrain_type",
+                "dist_major_river_km", "dam_count_50km", "waterbody_nearby"
+            ]
+            if session.get_context(k) is not None
+        ]
+
+        prompt = f"""You are the orchestration brain of FloodSense AI, a flood prediction system.
+A user submitted a request and you must plan the entire AI pipeline in ONE response.
+
+User query: "{user_query}"
+User type: {user_type}
+Uploaded data columns: {cols_str}
+Has uploaded data: {has_upload}
+Manual User Inputs (ALREADY PROVIDED): {manual_inputs}
+
+Return ONLY a single JSON object (no prose, no markdown fences):
+{{
+  "metadata": {{
+    "location": "<city/district from query or null>",
+    "state": "<Indian state or null>",
+    "country": "India",
+    "latitude": <float or null>,
+    "longitude": <float or null>,
+    "user_type": "{user_type}",
+    "intent": "<flood_prediction|simulation|recommendation|general_query>",
+    "wants_recommendations": <true|false (default true for flood_prediction)>,
+    "wants_simulation": <true|false (default false)>,
+    "urgency": "<low|medium|high|critical>",
+    "data_types": ["<rainfall|hydro|terrain>"],
+    "original_query": "{user_query[:200]}"
+  }},
+  "plan": [
+    {{
+      "step_index": 1,
+      "agent": "data_ingestion",
+      "action": "Ingest flood data",
+      "inputs": {{}},
+      "depends_on": []
+    }},
+    {{
+      "step_index": 2,
+      "agent": "preprocessing",
+      "action": "Preprocess data",
+      "inputs": {{"dataset": "raw_dataset"}},
+      "depends_on": [1]
+    }},
+    {{
+      "step_index": 3,
+      "agent": "prediction",
+      "action": "Predict flood risk",
+      "inputs": {{"dataset": "processed_dataset"}},
+      "depends_on": [2]
+    }}
+  ],
+  "model_config": {{
+    "mode": "<classification|regression|multi_class>",
+    "forecast_horizon": <1|3|7>,
+    "models_to_use": ["xgboost", "random_forest"],
+    "weights": {{"xgboost": 0.55, "random_forest": 0.45}}
+  }},
+  "fetch_plan": [
+    {{
+      "source": "<open_meteo|terrain|hydrological|gov_dataset>",
+      "category": "<rainfall|hydro|terrain|timeseries>",
+      "priority": <1|2|3>,
+      "params": {{}},
+      "rationale": "<one line reason>"
+    }}
+  ]
+}}
+
+Rules for plan:
+- Always include data_ingestion → preprocessing → prediction as steps 1-3.
+- Always include step 4 "recommendation" (depends_on: [3]) for flood_prediction intents.
+- Always include step 5 "simulation" (depends_on: [3]) for flood_prediction intents.
+- Always include step 6 "alerting" (depends_on: [3, 4]) for flood_prediction intents (it will be dynamically skipped later if risk is low).
+- For model_config: use classification by default, regression if user asks water levels, multi_class for authorities.
+- For fetch_plan: 
+  1. ONLY include sources for missing data categories.
+  2. If a data category (rainfall, hydro, terrain) is already covered by "Manual User Inputs", do NOT include a source for it.
+  3. if user uploaded data, only include terrain source (priority 2) IF it's not in Manual User Inputs. 
+  4. If no upload and no manual inputs, include open_meteo (priority 1) + terrain (priority 2).
+- Weights must sum to 1.0."""
+
+        fallback_plan = [
+            {"step_index": 1, "agent": "data_ingestion", "action": "Ingest data", "inputs": {}, "depends_on": []},
+            {"step_index": 2, "agent": "preprocessing", "action": "Preprocess", "inputs": {"dataset": "raw_dataset"}, "depends_on": [1]},
+            {"step_index": 3, "agent": "prediction", "action": "Predict", "inputs": {"dataset": "processed_dataset"}, "depends_on": [2]},
+            {"step_index": 4, "agent": "recommendation", "action": "Generate recommendations", "inputs": {"prediction": "ensemble_prediction"}, "depends_on": [3]},
+            {"step_index": 5, "agent": "simulation", "action": "Run flood simulation", "inputs": {"prediction": "ensemble_prediction"}, "depends_on": [3]},
+            {"step_index": 6, "agent": "alerting", "action": "Evaluate for alerts", "inputs": {"prediction": "ensemble_prediction", "recommendations": "recommendations"}, "depends_on": [3, 4]},
+        ]
+
+        try:
+            raw = await self._gemini.generate_json(prompt)
+        except Exception as exc:
+            logger.warning(f"[Orchestrator] Unified startup call failed: {exc}. Using fallback.")
+            session.set_context("user_type", user_type)
+            session.set_context("original_query", user_query)
+            return fallback_plan
+
+        if not raw or not isinstance(raw, dict):
+            logger.warning("[Orchestrator] Unified call returned non-dict; using fallback.")
+            session.set_context("user_type", user_type)
+            session.set_context("original_query", user_query)
+            return fallback_plan
+
+        # ── Populate session context from metadata ──────────────────────────
+        meta = raw.get("metadata", {})
+        for key in ["location", "state", "country", "latitude", "longitude",
+                    "intent", "wants_recommendations", "wants_simulation",
+                    "urgency", "data_types", "original_query"]:
+            val = meta.get(key)
+            if val is not None:
+                session.set_context(key, val)
+        session.set_context("user_type", user_type)
+
+        # ── Store pre-computed configs for sub-agents ───────────────────────
+        model_cfg = raw.get("model_config")
+        if model_cfg and isinstance(model_cfg, dict):
+            session.store_artifact("model_config", model_cfg)
+            logger.info(f"[Orchestrator] Pre-computed model config: {model_cfg.get('mode')} | "
+                        f"models={model_cfg.get('models_to_use')}")
+
+        fetch_plan = raw.get("fetch_plan")
+        if fetch_plan and isinstance(fetch_plan, list):
+            session.store_artifact("fetch_plan", fetch_plan)
+            logger.info(f"[Orchestrator] Pre-computed fetch plan: {len(fetch_plan)} tasks")
+
+        # ── Parse and return plan ────────────────────────────────────────
+        plan = raw.get("plan")
+        if not plan or not isinstance(plan, list):
+            logger.warning("[Orchestrator] Unified call returned no plan; using fallback.")
+            return fallback_plan
+
+        logger.info(
+            f"[Orchestrator] Unified startup: location={meta.get('location')} | "
+            f"intent={meta.get('intent')} | steps={len(plan)}"
+        )
+        return plan
+
+    # ── Plan execution ────────────────────────────────────────────────
 
     async def _execute_plan(self, session: Session, plan: List[Dict[str, Any]]) -> None:
         """
@@ -274,6 +529,30 @@ class OrchestratorAgent:
             for step in runnable:
                 completed_indices.add(step["step_index"])
                 remaining.remove(step)
+
+                # ── Dynamic Plan Pruning based on Prediction ──────────────
+                if step["agent"] == "prediction":
+                    prob = session.get_artifact("prediction_result", {}).get("flood_probability", 0.0)
+                    # Skip safety agents if risk is too low (< 40%)
+                    if prob < 0.4:
+                        logger.info(
+                            f"[Orchestrator] Risk too low ({prob:.2f}): Skipping safety agents "
+                            "(recommendation, simulation, alerting)."
+                        )
+                        # Remove downstream safety steps from remaining
+                        safety_agents = {"recommendation", "simulation", "alerting"}
+                        remaining = [s for s in remaining if s["agent"] not in safety_agents]
+                        # Mark them as completed (skipped) so UI/logic doesn't hang
+                        for s in plan:
+                            if s["agent"] in safety_agents and s["step_index"] not in completed_indices:
+                                completed_indices.add(s["step_index"])
+                                # Also record in session memory as SKIPPED
+                                skip_step = session.add_step(
+                                    agent_name=s["agent"],
+                                    action=s["action"],
+                                    input_data={"reason": f"Risk too low ({prob:.2f})"}
+                                )
+                                skip_step.status = StepStatus.SKIPPED
 
     async def _execute_with_retry(
         self,
@@ -333,6 +612,29 @@ class OrchestratorAgent:
         resolved_inputs = self._resolve_inputs(session, inputs_map)
         resolved_inputs["session"] = session      # Always pass session
 
+        # ── Auto-inject missing required inputs from session artifacts ─────────
+        # The LLM sometimes generates an empty inputs map. Fall back to
+        # well-known artifact keys so the pipeline always has what it needs.
+        schema = self._registry.get_schema(agent_name)
+        if schema:
+            FALLBACK_KEYS = {
+                "data":           ["data", "processed_dataset", "raw_dataset"],
+                "prediction":     ["prediction", "prediction_result"],
+                "recommendations": ["recommendations"],
+            }
+            for req_key in schema.required_inputs:
+                if req_key in resolved_inputs or req_key == "session":
+                    continue
+                for candidate in FALLBACK_KEYS.get(req_key, [req_key]):
+                    artifact = session.get_artifact(candidate)
+                    if artifact is not None:
+                        resolved_inputs[req_key] = artifact
+                        logger.debug(
+                            f"[Orchestrator] Auto-injected '{req_key}' "
+                            f"from artifact '{candidate}' for '{agent_name}'"
+                        )
+                        break
+
         # Record step start
         agent_step = session.add_step(
             agent_name=agent_name,
@@ -358,13 +660,59 @@ class OrchestratorAgent:
             # Auto-store outputs declared in plan as session artifacts
             for artifact_name in step_dict.get("outputs", []):
                 session.store_artifact(artifact_name, result.output)
-            # Context updates for prediction step
-            if agent_name == "prediction" and isinstance(result.output, dict):
-                self._ctx_mgr.update_risk(
-                    session,
-                    risk_level=result.output.get("risk_level", "UNKNOWN"),
-                    probability=result.output.get("flood_probability", 0.0),
-                )
+            # ── Fixed pipeline aliases ────────────────────────────────────────
+            # The LLM may use different artifact key names than what downstream
+            # agents expect. We always store well-known aliases so the pipeline
+            # is robust to LLM variation.
+            if agent_name == "data_ingestion":
+                # preprocessing/prediction look for "data" → alias raw_dataset
+                raw = session.get_artifact("raw_dataset")
+                if raw is not None:
+                    session.store_artifact("data", raw)
+            elif agent_name == "preprocessing":
+                # prediction looks for "data" → alias processed_dataset
+                processed = session.get_artifact("processed_dataset")
+                if processed is not None:
+                    session.store_artifact("data", processed)
+            elif agent_name == "prediction":
+                # Serialize Pydantic model → dict before storing
+                pred_data = result.output
+                if hasattr(pred_data, "model_dump"):
+                    pred_data = pred_data.model_dump()
+                elif hasattr(pred_data, "dict"):
+                    pred_data = pred_data.dict()
+                if isinstance(pred_data, dict):
+                    # Store under all keys so _build_response and recommendation
+                    # / alerting / simulation agents can all find it
+                    session.store_artifact("prediction", pred_data)
+                    session.store_artifact("prediction_result", pred_data)
+                    
+                    # Correctly access nested ensemble data
+                    ensemble = pred_data.get("ensemble") or {}
+                    session.store_artifact("ensemble_prediction", ensemble)
+                    
+                    self._ctx_mgr.update_risk(
+                        session,
+                        risk_level=ensemble.get("risk_level", "UNKNOWN"),
+                        probability=ensemble.get("flood_probability", 0.0),
+                    )
+            
+            # ── Unified Registry for Downstream Visibility ──────────────────
+            # Store serialized result under canonical keys used by _build_response
+            output = result.output
+            if hasattr(output, "model_dump"):
+                output = output.model_dump()
+            elif hasattr(output, "dict"):
+                output = output.dict()
+            
+            if agent_name == "recommendation":
+                session.store_artifact("recommendations", output)
+            elif agent_name == "simulation":
+                session.store_artifact("simulation_result", output)
+                if isinstance(output, dict) and "geojson" in output:
+                    session.store_artifact("geojson", output["geojson"])
+            elif agent_name == "alerting":
+                session.store_artifact("alert_status", output)
             logger.info(
                 f"[Orchestrator] ✓ '{agent_name}' succeeded in "
                 f"{agent_step.duration_ms:.0f}ms"
@@ -381,7 +729,7 @@ class OrchestratorAgent:
         """
         Aggregates all agent outputs into a single structured response.
         """
-        prediction    = session.get_artifact("prediction_result")
+        prediction    = session.get_artifact("prediction_result") or session.get_artifact("prediction")
         preprocessed  = session.get_artifact("processed_dataset")
         recommendations = session.get_artifact("recommendations")
         geojson       = session.get_artifact("geojson")
@@ -415,6 +763,10 @@ class OrchestratorAgent:
         """
         resolved: Dict[str, Any] = {}
         for param_name, artifact_key in inputs_map.items():
+            # Normalise: the LLM occasionally returns a list instead of a string.
+            # e.g. {"data": ["raw_dataset"]} -> treat first element as the key.
+            if isinstance(artifact_key, list):
+                artifact_key = artifact_key[0] if artifact_key else ""
             artifact = session.get_artifact(artifact_key)
             if artifact is not None:
                 resolved[param_name] = artifact

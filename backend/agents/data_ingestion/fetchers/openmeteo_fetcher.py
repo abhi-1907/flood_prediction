@@ -45,7 +45,6 @@ HOURLY_VARIABLES = [
 
 DAILY_VARIABLES = [
     "precipitation_sum",
-    "rain_sum",
     "precipitation_hours",
     "windspeed_10m_max",
     "et0_fao_evapotranspiration",
@@ -133,6 +132,7 @@ class OpenMeteoFetcher:
 
             # Standardise column names to match real training feature names
             merged = self._standardise_columns(merged)
+            merged = merged.loc[:, ~merged.columns.duplicated(keep="first")]
             merged["lat"]  = latitude
             merged["lon"] = longitude
             merged = merged.sort_values("date").reset_index(drop=True)

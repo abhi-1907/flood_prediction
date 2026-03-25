@@ -27,6 +27,9 @@ from utils.logger import logger
 # ── Priority weights per source (higher = preferred for dedup) ────────────────
 
 SOURCE_PRIORITY: Dict[str, int] = {
+    "user_csv":     10, # highest priority
+    "user_json":    10,
+    "user_text":    10,
     "open_meteo":   4,
     "hydrological": 3,
     "terrain":      2,

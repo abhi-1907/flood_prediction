@@ -69,23 +69,50 @@ class SourceIdentifier:
         schema_report: SchemaReport,
         user_query: str,
         context: Dict[str, Any],
+        session=None,   # Optional[Session] — avoids import cycle
     ) -> "IngestionPlan":
         """
         Produces an IngestionPlan describing exactly which fetchers to call.
 
-        Args:
-            schema_report: Output of SchemaValidator.
-            user_query:    Original user query string.
-            context:       Session context (location, user_type, data_types, etc.)
-
-        Returns:
-            IngestionPlan with ordered fetch tasks and enrichment instructions.
+        If the orchestrator already pre-computed a fetch plan via the unified
+        startup call, reads it from session to skip the LLM reasoning call.
         """
+        # Fast path: pre-computed fetch plan from unified startup call
+        if session is not None:
+            precomputed = session.get_artifact("fetch_plan")
+            if precomputed and isinstance(precomputed, list):
+                logger.info("[SourceIdentifier] Using pre-computed fetch plan (no LLM call).")
+                tasks = []
+                for item in precomputed:
+                    try:
+                        task = FetchTask(
+                            source=DataSourceType(item.get("source", "open_meteo")),
+                            category=DataCategory(item.get("category", "rainfall")),
+                            priority=int(item.get("priority", 2)),
+                            params=item.get("params", {}),
+                            rationale=item.get("rationale", "Pre-computed by startup call."),
+                        )
+                        tasks.append(task)
+                    except (ValueError, KeyError) as e:
+                        logger.warning(f"[SourceIdentifier] Bad pre-computed task: {item} — {e}")
+                if tasks:
+                    return IngestionPlan(
+                        tasks=sorted(tasks, key=lambda t: t.priority),
+                        context=context,
+                        schema_report=schema_report,
+                    )
+
         # Phase 1: Rule-based gap analysis
         rule_gaps = self._rule_based_gaps(schema_report, context)
         logger.info(f"[SourceIdentifier] Rule-based gaps: {[g.value for g in rule_gaps]}")
 
-        # Phase 2: LLM-enhanced reasoning
+        # Optimization: If no gaps or perfectly clear rule-based plan, skip LLM
+        if not rule_gaps and schema_report.detected_sources:
+            logger.info("[SourceIdentifier] No gaps detected — skipping LLM reasoning.")
+            return IngestionPlan(tasks=[], context=context, schema_report=schema_report)
+
+        # Phase 2: LLM-enhanced reasoning (only if needed or complex gaps)
+        # Note: If we are in "file upload" mode, we often prefer rules to save quota
         plan = await self._llm_reasoning(
             schema_report, user_query, context, rule_gaps
         )
@@ -109,11 +136,11 @@ class SourceIdentifier:
         failed     = [r for r in fetch_results if not r.success]
         categories = list({r.category for r in successful})
 
-        has_rainfall = DataCategory.RAINFALL in categories or DataCategory.TIMESERIES in categories
-        has_hydro    = DataCategory.HYDRO in categories
-        has_terrain  = DataCategory.TERRAIN in categories
+        has_rainfall = DataCategory.RAINFALL in categories or DataCategory.TIMESERIES in categories or DataCategory.MIXED in categories
+        has_hydro    = DataCategory.HYDRO in categories or DataCategory.MIXED in categories
+        has_terrain  = DataCategory.TERRAIN in categories or DataCategory.MIXED in categories
 
-        go_no_go = "GO" if (has_rainfall or has_hydro) and total_rows > 0 else "NO_GO"
+        go_no_go = "GO" if (has_rainfall or has_hydro or has_terrain) and total_rows > 0 else "NO_GO"
 
         return {
             "go_no_go":        go_no_go,
@@ -134,26 +161,26 @@ class SourceIdentifier:
         report: SchemaReport,
         context: Dict[str, Any],
     ) -> List[DataCategory]:
-        """Determines which data categories are definitively missing."""
+        """Determines which data categories are absent from BOTH report and context."""
         gaps = list(report.missing_categories)
 
-        # If user gave us no data at all (plain text query) — everything is missing
-        if report.row_count == 0:
-            gaps = [
-                DataCategory.RAINFALL,
-                DataCategory.HYDRO,
-                DataCategory.TERRAIN,
-            ]
+        # Remove categories that are already satisfied by context variables
+        if DataCategory.RAINFALL in gaps:
+            if context.get("rain_mm_weekly") is not None or context.get("rain_mm_monthly") is not None:
+                gaps.remove(DataCategory.RAINFALL)
+        
+        if DataCategory.HYDRO in gaps:
+            if context.get("dist_major_river_km") is not None or context.get("waterbody_nearby") is not None:
+                gaps.remove(DataCategory.HYDRO)
+                
+        if DataCategory.TERRAIN in gaps:
+            if all(context.get(k) is not None for k in ["elevation_m", "slope_degree", "terrain_type"]):
+                gaps.remove(DataCategory.TERRAIN)
 
-        # If the user explicitly mentioned specific data types, add those to gaps
-        explicit = context.get("data_types", [])
-        for dt in explicit:
-            try:
-                cat = DataCategory(dt)
-                if cat not in gaps:
-                    gaps.append(cat)
-            except ValueError:
-                pass
+        # If user gave us zero data in report, it might still be covered by context
+        if report.row_count == 0 and not gaps:
+            # If everything was in context, we are good.
+            pass
 
         return list(set(gaps))
 
@@ -181,6 +208,12 @@ class SourceIdentifier:
             ],
         }
 
+        # Identify fields already satisfied by the user (manual/textbox)
+        context_satisfied = [
+            k for k in ["rain_mm_weekly", "rain_mm_monthly", "elevation_m", "slope_degree", "dist_major_river_km", "waterbody_nearby", "terrain_type"]
+            if context.get(k) is not None
+        ]
+
         prompt = f"""
 You are a data engineering AI for a flood prediction system.
 
@@ -193,6 +226,8 @@ Location context:
 
 Existing data schema analysis:
 {json.dumps(schema_summary, indent=2)}
+
+Manual User Inputs (ALREADY PRESENT): {context_satisfied}
 
 Rule-based gaps identified: {[g.value for g in rule_gaps]}
 
@@ -211,11 +246,12 @@ Task: Generate a fetch plan as a JSON array. Each item has:
   "rationale": "<one-line reason this source is needed>"
 }}
 
-Rules:
-- Only include sources that are genuinely needed to fill gaps.
-- If the user gave no data at all, include all relevant sources.
-- If terrain data is missing and location is known, always include terrain.
-- Respond ONLY with the JSON array, no prose.
+Strict Fetch Rules:
+1. ONLY include sources that are genuinely needed to fill gaps.
+2. If a data category is covered by "Manual User Inputs" above, do NOT include a source for it.
+3. If the user provided a file with multiple rows, prefer that data over everything else.
+4. If terrain data is missing and location is known, include terrain.
+5. Respond ONLY with the JSON array, no prose.
 """
         raw = await self._gemini.generate_json(prompt, use_fast_model=True)
         tasks = []

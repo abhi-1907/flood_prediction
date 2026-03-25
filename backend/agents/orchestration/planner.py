@@ -131,43 +131,28 @@ class Planner:
         session.store_artifact("execution_plan", revised_plan)
         return revised_plan
 
-    async def classify_intent(self, user_query: str) -> Dict[str, Any]:
+    async def classify_intent(self, user_query: str, session=None) -> Dict[str, Any]:
+        """Returns intent metadata.
+
+        If the session already has intent (populated by ContextManager's merged
+        metadata+intent call), return it directly — no extra LLM call needed.
         """
-        Quick intent classification before building a full plan.
-
-        Returns a dict with:
-          - intent: 'prediction_query' | 'data_upload' | 'alert_subscription'
-                    | 'map_request' | 'recommendation_request' | 'general_question'
-          - location: extracted place name or null
-          - data_type: 'rainfall' | 'hydro' | 'terrain' | 'mixed' | null
-          - urgency: 'immediate' | 'routine'
-        """
-        prompt = f"""
-You are an AI assistant for a flood prediction system.
-Classify the following user query into structured intent metadata.
-Respond ONLY with a JSON object — no prose, no markdown fences.
-
-Query: "{user_query}"
-
-Output schema:
-{{
-  "intent": "<prediction_query | data_upload | alert_subscription | map_request | recommendation_request | general_question>",
-  "location": "<place name string or null>",
-  "data_type": "<rainfall | hydro | terrain | mixed | null>",
-  "urgency": "<immediate | routine>"
-}}
-"""
-        raw = await self._gemini.generate(prompt)
-        try:
-            return json.loads(raw.strip())
-        except json.JSONDecodeError:
-            logger.warning("[Planner] Could not parse intent JSON, using defaults.")
-            return {
-                "intent": "prediction_query",
-                "location": None,
-                "data_type": None,
-                "urgency": "routine",
-            }
+        if session is not None:
+            intent = session.get_context("intent")
+            if intent:
+                return {
+                    "intent":    intent,
+                    "location":  session.get_context("location"),
+                    "data_type": session.get_context("data_type"),
+                    "urgency":   session.get_context("urgency", "routine"),
+                }
+        # Fallback default — avoids an LLM call
+        return {
+            "intent":    "prediction_query",
+            "location":  None,
+            "data_type": None,
+            "urgency":   "routine",
+        }
 
     # ── Prompt builders ───────────────────────────────────────────────────
 

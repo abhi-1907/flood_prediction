@@ -108,6 +108,7 @@ class DataIngestionAgent:
             schema_report=schema_report,
             user_query=query or session.user_query,
             context=context,
+            session=session,
         )
         session.store_artifact("ingestion_plan", plan.summary())
 
@@ -133,6 +134,27 @@ class DataIngestionAgent:
         user_upload_result = session.get_artifact("user_fetch_result")
         if user_upload_result is not None:
             fetch_results.insert(0, user_upload_result)
+        else:
+            # Fallback: If no file uploaded, check if manual parameters were provided
+            # We synthesize a 1-row FetchResult so the merger and quality assessment see them.
+            manual_keys = [
+                "rain_mm_weekly", "rain_mm_monthly", "temp_c_mean", "rh_percent_mean", "wind_ms_mean",
+                "elevation_m", "slope_degree", "terrain_type",
+                "dist_major_river_km", "dam_count_50km", "waterbody_nearby",
+                "latitude", "longitude", "lat", "lon"
+            ]
+            manual_data = {k: context[k] for k in manual_keys if k in context and context[k] is not None}
+            if manual_data:
+                logger.info(f"[DataIngestionAgent] Synthesizing FetchResult from {len(manual_data)} manual parameters.")
+                manual_df = pd.DataFrame([manual_data])
+                fetch_results.append(FetchResult(
+                    source=DataSourceType.USER_TEXT,
+                    category=DataCategory.MIXED,
+                    success=True,
+                    data=manual_df,
+                    columns=list(manual_df.columns),
+                    row_count=1
+                ))
 
         # ── Step 4: Quality assessment ────────────────────────────────────
         quality = await self._identifier.assess_quality(fetch_results, schema_report)
@@ -158,6 +180,20 @@ class DataIngestionAgent:
         merged_df = self._merger.merge(
             fetch_results, primary_lat=lat, primary_lon=lon
         )
+
+        # ── Override with user-provided context variables ─────────────────
+        # If the user explicitly provided parameters via the UI, ensure they
+        # overwrite any fetched data so the simulation/prediction uses them.
+        override_keys = [
+            "rain_mm_weekly", "rain_mm_monthly", "temp_c_mean", "rh_percent_mean", "wind_ms_mean",
+            "elevation_m", "slope_degree", "terrain_type",
+            "dist_major_river_km", "dam_count_50km", "waterbody_nearby"
+        ]
+        for key in override_keys:
+            if key in context and context[key] is not None:
+                # If it's a number/string, apply to all rows in the dataset
+                merged_df[key] = context[key]
+                logger.info(f"[DataIngestionAgent] Overriding '{key}' with user value: {context[key]}")
 
         if merged_df.empty:
             errors.append("Data merge produced an empty dataset.")
@@ -198,13 +234,17 @@ class DataIngestionAgent:
         file_bytes: Optional[bytes],
     ) -> SchemaReport:
         """Detects input type and runs the appropriate validator."""
+        context = session.context
 
         if file_bytes:
             # Try CSV first, fallback to JSON
             try:
-                schema = self._validator.validate_csv(file_bytes)
-                # Parse and store user's DataFrame
+                # 1. Profile and Rename columns
                 df = pd.read_csv(io.BytesIO(file_bytes), low_memory=False)
+                df = self._validator.map_columns(df)
+                schema = self._validator.validate_dataframe(df, context=context)
+                
+                # 2. Store artifacts
                 session.store_artifact("user_dataframe", df)
                 session.store_artifact(
                     "user_fetch_result",
@@ -217,15 +257,29 @@ class DataIngestionAgent:
                         row_count=len(df),
                     ),
                 )
+
+                # 3. Extract Coordinates if missing
+                if not session.get_context("latitude") and "latitude" in df.columns:
+                    try:
+                        lat_val = float(df["latitude"].iloc[0])
+                        lon_val = float(df["longitude"].iloc[0])
+                        session.set_context("latitude", lat_val)
+                        session.set_context("longitude", lon_val)
+                        session.set_context("has_location", True)
+                    except Exception:
+                        pass
+
                 return schema
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"[IngestionAgent] CSV processing failed: {exc}")
 
             try:
                 import json
                 data = json.loads(file_bytes.decode("utf-8", errors="ignore"))
-                schema = self._validator.validate_json(data)
                 df = pd.json_normalize(data) if isinstance(data, dict) else pd.DataFrame(data)
+                df = self._validator.map_columns(df)
+                schema = self._validator.validate_dataframe(df, context=context)
+                
                 session.store_artifact("user_dataframe", df)
                 session.store_artifact(
                     "user_fetch_result",
@@ -239,8 +293,8 @@ class DataIngestionAgent:
                     ),
                 )
                 return schema
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"[IngestionAgent] JSON processing failed: {exc}")
 
         # No file — plain text query
         return self._validator.validate_text(query)

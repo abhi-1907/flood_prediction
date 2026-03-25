@@ -209,11 +209,8 @@ class ImpactAssessor:
             ),
         ))
 
-        # LLM-enhanced summary (optional)
-        if self._gemini:
-            llm_impact = await self._llm_enhance(impacts, scenario)
-            if llm_impact:
-                impacts.append(llm_impact)
+        # LLM enhancement skipped — merged into simulation_agent._generate_merged_narrative
+        # to save one Gemini API call.
 
         logger.info(
             f"[ImpactAssessor] {len(impacts)} impact estimates | "
@@ -224,36 +221,23 @@ class ImpactAssessor:
 
     # ── LLM enhancement ───────────────────────────────────────────────────
 
-    async def _llm_enhance(
+    async def _generate_merged_narrative(
         self,
-        impacts:  List[ImpactEstimate],
-        scenario: ScenarioParameters,
-    ) -> Optional[ImpactEstimate]:
-        """Uses Gemini to add a qualitative risk note."""
-        try:
-            summary = "\n".join(
-                f"- {i.metric}: {i.value} {i.unit}" for i in impacts
-            )
-            prompt = f"""
-Given these flood simulation impact estimates for {scenario.location or 'the target area'}:
-{summary}
+        scenario:     ScenarioParameters,
+        timeline:     List[SimulationTimeStep],
+        impacts:      list,
+        peak_step:    SimulationTimeStep,
+        total_area_km2: float,
+    ) -> str:
+        """Single merged LLM call: impact qualitative note + simulation summary.
 
-Scenario: {scenario.name} | Rainfall: {scenario.rainfall_mm}mm × {scenario.rainfall_days} days
-
-Write a 2-sentence qualitative assessment of the most critical risk.
-Focus on life-safety and time-sensitive actions. Be specific.
-Return ONLY the assessment text, no JSON.
-"""
-            narrative = await self._gemini.generate(prompt, use_fast_model=True)
-            if narrative:
-                return ImpactEstimate(
-                    category=ImpactCategory.POPULATION,
-                    metric="qualitative_assessment",
-                    value=0,
-                    unit="narrative",
-                    confidence=0.5,
-                    description=narrative.strip()[:500],
-                )
-        except Exception as exc:
-            logger.warning(f"[ImpactAssessor] LLM enhancement failed: {exc}")
-        return None
+        Replaces two previously separate calls (_llm_enhance in ImpactAssessor
+        and _generate_summary in SimulationAgent) to save one Gemini API call.
+        Now lives in simulation_agent.py — this stub kept for reference only.
+        """
+        return (
+            f"Simulation '{scenario.name}' for {scenario.location or 'target area'}: "
+            f"{scenario.rainfall_mm}mm rainfall. "
+            f"Peak water level {peak_step.water_level_m:.2f}m at hour {peak_step.hour}. "
+            f"Total area: {total_area_km2:.1f} km²."
+        )

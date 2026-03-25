@@ -97,15 +97,18 @@ class ContextManager:
         user_query: str,
         uploaded_columns: Optional[list],
     ) -> Dict[str, Any]:
-        """Uses the LLM to extract structured metadata from an unstructured query."""
+        """Uses the LLM to extract structured metadata AND intent from an unstructured query.
+
+        Combining both saves one Gemini API call — the Planner reads intent from
+        session context instead of making a separate classify_intent() call.
+        """
         columns_text = (
             f"Uploaded CSV columns: {uploaded_columns}" if uploaded_columns
             else "No file uploaded."
         )
-        prompt = f"""
-You are an assistant for a flood prediction system.
-Extract structured metadata from the user query below.
-Respond ONLY with a valid JSON object.
+        prompt = f"""You are an assistant for a flood prediction system.
+Extract structured metadata AND intent from the user query below.
+Respond ONLY with a valid JSON object — no prose, no markdown fences.
 
 User query: "{user_query}"
 {columns_text}
@@ -118,9 +121,10 @@ Output schema:
   "wants_recommendations": <true|false>,
   "wants_simulation": <true|false>,
   "wants_alerts": <true|false>,
-  "urgency": "<immediate | routine>"
-}}
-"""
+  "urgency": "<immediate | routine>",
+  "intent": "<prediction_query | data_upload | alert_subscription | map_request | recommendation_request | general_question>",
+  "data_type": "<rainfall | hydro | terrain | mixed | null>"
+}}"""
         raw = await self._gemini.generate(prompt)
         import json, re
         cleaned = re.sub(r"```(?:json)?", "", raw).strip()
@@ -136,6 +140,8 @@ Output schema:
                 "wants_simulation": False,
                 "wants_alerts": False,
                 "urgency": "routine",
+                "intent": "prediction_query",
+                "data_type": None,
             }
 
     # ── Geocoding ─────────────────────────────────────────────────────────

@@ -1,13 +1,16 @@
 """
-Gemini Service – Centralised, reusable wrapper for Google Gemini API calls.
+Gemini Service – Centralised, reusable wrapper for the Google Gemini API.
+
+Uses the new `google-genai` SDK (google.genai) which replaced the deprecated
+`google.generativeai` package. All agents should import `get_gemini_service()`
+rather than calling the SDK directly.
 
 Features:
-  - Async and sync generation methods
-  - Configurable model selection (gemini-1.5-pro, gemini-1.5-flash, etc.)
-  - Automatic retry with exponential backoff on quota/server errors
-  - Chat session management (multi-turn conversations)
+  - Async text generation with automatic retry / exponential backoff
+  - JSON-mode helper (generate_json)
+  - Multi-turn chat session wrapper
   - Token usage tracking
-  - Structured JSON generation helper
+  - Configurable model selection
 """
 
 from __future__ import annotations
@@ -17,7 +20,8 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 
 from config import settings
 from utils.logger import logger
@@ -25,34 +29,26 @@ from utils.logger import logger
 
 # ── Default models ────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL       = "gemini-1.5-pro"
-FAST_MODEL          = "gemini-1.5-flash"    # Cheaper / faster for simple tasks
+DEFAULT_MODEL = "gemini-2.0-flash"   # Available and stable on this API key
+FAST_MODEL    = "gemini-2.0-flash"
 
 # Retry settings
-MAX_RETRIES         = 3
-RETRY_BASE_SECS     = 2.0
-
-# Safety settings (less restrictive for professional/emergency use-cases)
-SAFETY_SETTINGS = [
-    {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_ONLY_HIGH"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_ONLY_HIGH"},
-    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
-]
+MAX_RETRIES      = 1   # Fail fast to hit fallbacks and save quota
+RETRY_BASE_SECS  = 4.0
 
 
 class GeminiService:
     """
-    Thin async wrapper around the google-generativeai SDK.
+    Async wrapper around the google-genai SDK.
 
-    All agents should import and use this service rather than calling
-    genai directly, so we get unified retry logic, logging, and token tracking.
+    All agents should use this service so we get unified retry logic,
+    logging, and token tracking.
     """
 
     def __init__(
         self,
-        api_key:     Optional[str] = None,
-        model_name:  str = DEFAULT_MODEL,
+        api_key:    Optional[str] = None,
+        model_name: str = DEFAULT_MODEL,
     ) -> None:
         _key = api_key or settings.GEMINI_API_KEY
         if not _key:
@@ -60,16 +56,10 @@ class GeminiService:
                 "GEMINI_API_KEY is not set. "
                 "Add it to your .env file or pass it explicitly."
             )
-        genai.configure(api_key=_key)
+        # New SDK: create a Client instance (v1beta default works for gemini-2.x models)
+        self._client     = genai.Client(api_key=_key)
         self._model_name = model_name
-        self._model      = genai.GenerativeModel(
-            model_name=model_name,
-            safety_settings=SAFETY_SETTINGS,
-        )
-        self._fast_model = genai.GenerativeModel(
-            model_name=FAST_MODEL,
-            safety_settings=SAFETY_SETTINGS,
-        )
+        self._fast_model = FAST_MODEL
         self._token_usage: Dict[str, int] = {"prompt": 0, "completion": 0}
         logger.info(f"[GeminiService] Initialised with model={model_name}")
 
@@ -87,15 +77,15 @@ class GeminiService:
 
         Args:
             prompt:             The full prompt string.
-            use_fast_model:     Use gemini-1.5-flash instead of the main model.
+            use_fast_model:     Use FAST_MODEL instead of the main model.
             temperature:        Sampling temperature (lower = more deterministic).
             max_output_tokens:  Cap on response length.
 
         Returns:
             The generated text string.
         """
-        model = self._fast_model if use_fast_model else self._model
-        generation_config = genai.types.GenerationConfig(
+        model = self._fast_model if use_fast_model else self._model_name
+        config = genai_types.GenerateContentConfig(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
         )
@@ -103,11 +93,12 @@ class GeminiService:
         for attempt in range(MAX_RETRIES):
             try:
                 response = await asyncio.to_thread(
-                    model.generate_content,
-                    prompt,
-                    generation_config=generation_config,
+                    self._client.models.generate_content,
+                    model=model,
+                    contents=prompt,
+                    config=config,
                 )
-                text = response.text
+                text = response.text or ""
                 self._track_usage(response)
                 logger.debug(
                     f"[GeminiService] Generated {len(text)} chars "
@@ -135,8 +126,7 @@ class GeminiService:
         """
         Generates a response and parses it as JSON.
 
-        If parsing fails, returns an empty dict rather than raising,
-        so agents can handle the failure gracefully.
+        If parsing fails, returns an empty dict so agents can handle gracefully.
         """
         raw = await self.generate(prompt, use_fast_model=use_fast_model, temperature=0.1)
         cleaned = re.sub(r"```(?:json)?", "", raw).strip().rstrip("```").strip()
@@ -153,31 +143,34 @@ class GeminiService:
         history: Optional[List[Dict[str, str]]] = None,
     ) -> "GeminiChatSession":
         """Creates a multi-turn chat session."""
-        chat = self._model.start_chat(history=history or [])
-        return GeminiChatSession(chat, self)
+        return GeminiChatSession(
+            client=self._client,
+            model=self._model_name,
+            history=history or [],
+            service=self,
+        )
 
     # ── Embeddings ────────────────────────────────────────────────────────
 
     async def embed(self, text: str) -> List[float]:
         """
-        Generates a text embedding vector.
-        Useful for semantic similarity comparisons in the recommendation agent.
+        Generates a text embedding vector using the embeddings model.
+        Useful for semantic similarity in the recommendation agent.
         """
         result = await asyncio.to_thread(
-            genai.embed_content,
-            model="models/text-embedding-004",
-            content=text,
-            task_type="semantic_similarity",
+            self._client.models.embed_content,
+            model="text-embedding-004",
+            contents=text,
         )
-        return result["embedding"]
+        return result.embeddings[0].values
 
     # ── Token tracking ────────────────────────────────────────────────────
 
     def _track_usage(self, response: Any) -> None:
         try:
-            usage = response.usage_metadata
-            self._token_usage["prompt"]     += usage.prompt_token_count or 0
-            self._token_usage["completion"] += usage.candidates_token_count or 0
+            meta = response.usage_metadata
+            self._token_usage["prompt"]     += meta.prompt_token_count or 0
+            self._token_usage["completion"] += meta.candidates_token_count or 0
         except Exception:
             pass
 
@@ -190,23 +183,36 @@ class GeminiService:
 # ── Chat session wrapper ──────────────────────────────────────────────────────
 
 class GeminiChatSession:
-    """Wraps a genai ChatSession for multi-turn conversations."""
+    """Wraps multi-turn chat using the new google-genai SDK."""
 
-    def __init__(self, chat: Any, service: GeminiService) -> None:
-        self._chat    = chat
+    def __init__(
+        self,
+        client: Any,
+        model: str,
+        history: List[Dict[str, str]],
+        service: GeminiService,
+    ) -> None:
+        self._client  = client
+        self._model   = model
+        self._history: List[Dict[str, str]] = list(history)
         self._service = service
 
     async def send(self, message: str, temperature: float = 0.3) -> str:
         """Sends a message and returns the assistant reply."""
+        self._history.append({"role": "user", "parts": [{"text": message}]})
+
+        config = genai_types.GenerateContentConfig(temperature=temperature)
         for attempt in range(MAX_RETRIES):
             try:
-                gen_config = genai.types.GenerationConfig(temperature=temperature)
                 response = await asyncio.to_thread(
-                    self._chat.send_message,
-                    message,
-                    generation_config=gen_config,
+                    self._client.models.generate_content,
+                    model=self._model,
+                    contents=self._history,
+                    config=config,
                 )
-                return response.text
+                reply = response.text or ""
+                self._history.append({"role": "model", "parts": [{"text": reply}]})
+                return reply
             except Exception as exc:
                 wait = RETRY_BASE_SECS * (2 ** attempt)
                 logger.warning(f"[GeminiChatSession] Error (attempt {attempt+1}): {exc}")
@@ -214,10 +220,11 @@ class GeminiChatSession:
                     await asyncio.sleep(wait)
                 else:
                     raise
+        return ""
 
     @property
     def history(self) -> List[Dict]:
-        return self._chat.history
+        return list(self._history)
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

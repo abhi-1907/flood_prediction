@@ -25,7 +25,8 @@ router = APIRouter()
 # ── Request / Response schemas ────────────────────────────────────────────────
 
 class OrchestrationRequest(BaseModel):
-    query: str
+    input_mode: str = "nlp"             # "nlp" | "manual"
+    query: Optional[str] = None
     user_type: str = "general_public"   # general_public | authority | first_responder
     context: Optional[dict] = None
 
@@ -50,14 +51,35 @@ async def orchestrate(request: OrchestrationRequest):
     recommendation → simulation → alerting (as applicable).
     """
     try:
+        # ── Mutually exclusive input validation ───────────────────────────────
+        query = request.query
+        if request.input_mode == "nlp":
+            if not query or not query.strip():
+                raise ValueError("A query is required when input_mode is 'nlp'.")
+            if request.context:
+                raise ValueError("Context parameters are not allowed in 'nlp' mode.")
+            final_query = query
+            final_context = None
+
+        elif request.input_mode == "manual":
+            if not request.context:
+                raise ValueError("Context parameters are required when input_mode is 'manual'.")
+            final_query = query or "Analyze flood risk based on provided parameters."
+            final_context = request.context
+
+        else:
+            raise ValueError(f"Invalid input_mode: '{request.input_mode}'")
+
         result = await orchestrator.run(
-            user_query=request.query,
+            user_query=final_query,
             user_type=request.user_type,
-            initial_context=request.context,
+            initial_context=final_context,
         )
         return OrchestrationResponse(**{
             k: result.get(k) for k in OrchestrationResponse.model_fields
         })
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -68,15 +90,19 @@ async def orchestrate(request: OrchestrationRequest):
     summary="Run pipeline with a CSV/JSON file upload",
 )
 async def orchestrate_with_file(
-    query:     str      = Form(...),
-    user_type: str      = Form("general_public"),
-    file:      UploadFile = File(...),
+    input_mode: str      = Form("file"),
+    query:      Optional[str] = Form(None),
+    user_type:  str      = Form("general_public"),
+    file:       UploadFile = File(...),
 ):
     """
     Multipart form endpoint — accepts a data file alongside a query.
     The file is parsed for column names and passed to the ingestion agent.
     """
     try:
+        if input_mode != "file":
+             raise ValueError("Upload endpoint requires input_mode='file'.")
+             
         content = await file.read()
         # Quick column extraction for context (header line only)
         try:
@@ -85,8 +111,10 @@ async def orchestrate_with_file(
         except Exception:
             columns = []
 
+        final_query = query or f"Analyze data from uploaded file: {file.filename}"
+
         result = await orchestrator.run(
-            user_query=query,
+            user_query=final_query,
             uploaded_file_bytes=content,
             uploaded_columns=columns,
             user_type=user_type,
@@ -94,6 +122,8 @@ async def orchestrate_with_file(
         return OrchestrationResponse(**{
             k: result.get(k) for k in OrchestrationResponse.model_fields
         })
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -107,21 +137,113 @@ async def orchestrate_stream(request: OrchestrationRequest):
     Frontend should use EventSource or fetch() with ReadableStream.
     """
     async def event_generator():
-        async for event in orchestrator.stream(
-            user_query=request.query,
+        try:
+            # ── Mutually exclusive input validation ───────────────────────────────
+            query = request.query
+            if request.input_mode == "nlp":
+                if not query or not query.strip():
+                    raise ValueError("A query is required when input_mode is 'nlp'.")
+                if request.context:
+                    raise ValueError("Context parameters are not allowed in 'nlp' mode.")
+                final_query = query
+                final_context = None
+
+            elif request.input_mode == "manual":
+                if not request.context:
+                    raise ValueError("Context parameters are required when input_mode is 'manual'.")
+                final_query = query or "Analyze flood risk based on provided parameters."
+                final_context = request.context
+
+            else:
+                raise ValueError(f"Invalid input_mode: '{request.input_mode}'")
+        except ValueError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+            
+        session_id = None
+        async for raw in orchestrator.stream(
+            user_query=final_query,
             user_type=request.user_type,
+            initial_context=final_context,
         ):
-            yield f"data: {json.dumps(event)}\n\n"
+            event_type = raw.get("event", "")
+            data       = raw.get("data", {})
+
+            if event_type == "plan_ready":
+                # Surface session_id from the plan data if available
+                if isinstance(data, dict):
+                    session_id = data.get("session_id")
+                evt = {
+                    "type":       "plan_ready",
+                    "agent":      None,
+                    "status":     "ready",
+                    "message":    f"Plan created with {data.get('steps', '?')} steps",
+                    "session_id": session_id,
+                    "data":       data,
+                }
+
+            elif event_type == "step_started":
+                agent = data.get("agent", "unknown")
+                evt = {
+                    "type":    "agent_start",
+                    "agent":   agent,
+                    "status":  "active",
+                    "message": f"Starting {agent}…",
+                    "data":    data,
+                }
+
+            elif event_type == "step_done":
+                agent      = data.get("agent", "unknown")
+                step_status = data.get("status", "completed")
+                # Map internal StepStatus strings to frontend-friendly names
+                if step_status in ("succeeded", "completed", "SUCCEEDED", "COMPLETED"):
+                    fe_status = "done"
+                elif step_status in ("skipped", "SKIPPED"):
+                    fe_status = "skipped"
+                elif step_status in ("failed", "FAILED"):
+                    fe_status = "error"
+                else:
+                    fe_status = "done"
+                evt = {
+                    "type":    "agent_complete",
+                    "agent":   agent,
+                    "status":  fe_status,
+                    "message": f"{agent} {fe_status}",
+                    "data":    data.get("result") or data,
+                }
+
+            elif event_type == "complete":
+                # Whole pipeline finished — include the full result payload
+                if isinstance(data, dict):
+                    session_id = data.get("session_id", session_id)
+                evt = {
+                    "type":            "complete",
+                    "agent":           None,
+                    "status":          "done",
+                    "message":         "Pipeline complete",
+                    "elapsed_seconds": data.get("elapsed_seconds") if isinstance(data, dict) else None,
+                    "session_id":      session_id,
+                    "data":            data,
+                }
+
+            else:
+                # Pass-through any other event types unchanged
+                evt = {"type": event_type, **data}
+
+            yield f"data: {json.dumps(evt)}\n\n"
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control":    "no-cache",
             "X-Accel-Buffering": "no",   # Disable Nginx buffering for SSE
         },
     )
+
 
 
 # ── Session management (admin) ────────────────────────────────────────────────

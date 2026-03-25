@@ -139,8 +139,8 @@ class SimulationAgent:
             total_area_km2 = map_data.get("severity_stats", {}).get("total_area_km2", 0)
             inundated_pct  = map_data.get("severity_stats", {}).get("inundated_pct", 0)
 
-            # ── 8. Generate LLM narrative summary ─────────────────────────
-            summary = await self._generate_summary(
+            # ── 8. Single merged LLM call: impact narrative + summary ──────
+            summary = await self._generate_merged_narrative(
                 scenario, timeline, impacts, peak_step, total_area_km2
             )
 
@@ -159,22 +159,24 @@ class SimulationAgent:
                 f"peak={peak_step.water_level_m:.2f}m @ H+{peak_step.hour}"
             )
 
-            return SimulationResult(
-                session_id=session_id,
-                status=status,
-                scenario=scenario,
-                flood_zones=zones,
-                timeline=timeline,
-                impact=impacts,
-                peak_depth_m=round(max(z.depth_m for z in zones) if zones else 0, 3),
-                peak_hour=peak_step.hour,
-                total_area_km2=total_area_km2,
-                inundated_pct=inundated_pct,
-                geojson=geojson,
-                summary=summary,
-                warnings=warnings,
-                errors=errors,
-            )
+            return {
+                "session_id": session_id,
+                "status": status,
+                "scenario_name": scenario.name,
+                "location": {"lat": scenario.latitude, "lon": scenario.longitude, "name": scenario.location},
+                "flood_risk_score": peak_step.risk_score,
+                "affected_area_km2": total_area_km2,
+                "peak_depth_m": round(max(z.depth_m for z in zones) if zones else 0, 3),
+                "peak_hour": peak_step.hour,
+                "peak_discharge_m3s": peak_step.discharge_m3s,
+                "inundated_pct": inundated_pct,
+                "timeline_chart": [s.model_dump() for s in timeline],
+                "impact_summary": [i.model_dump() for i in impacts],
+                "geojson": geojson,
+                "summary": summary,
+                "warnings": warnings,
+                "errors": errors,
+            }
 
         except Exception as exc:
             logger.exception(f"[SimulationAgent] Unhandled error: {exc}")
@@ -235,23 +237,28 @@ class SimulationAgent:
 
         return terrain
 
-    # ── LLM summary ──────────────────────────────────────────────────────
+    # ── Single merged LLM narrative ───────────────────────────────────────
 
-    async def _generate_summary(
+    async def _generate_merged_narrative(
         self,
-        scenario:     ScenarioParameters,
-        timeline:     List[SimulationTimeStep],
-        impacts:      list,
-        peak_step:    SimulationTimeStep,
+        scenario:       ScenarioParameters,
+        timeline:       List[SimulationTimeStep],
+        impacts:        list,
+        peak_step:      SimulationTimeStep,
         total_area_km2: float,
     ) -> str:
-        """Generates a natural-language summary of the simulation."""
+        """Single LLM call replacing: ImpactAssessor._llm_enhance + _generate_summary.
+
+        Produces a 3-4 sentence narrative covering:
+        - Most critical life-safety finding from impacts
+        - Time-sensitive action needed
+        - Overall simulation summary (peak level, severity, area)
+        """
         try:
             impact_lines = "\n".join(
                 f"- {i.metric}: {i.value} {i.unit}" for i in impacts[:6]
             )
-            prompt = f"""
-Summarize this flood simulation result in 3–4 sentences.
+            prompt = f"""Summarize this flood simulation in 3–4 sentences.
 
 Scenario: {scenario.name}
 Location: {scenario.location or 'Target area'}
@@ -259,14 +266,14 @@ Rainfall: {scenario.rainfall_mm}mm over {scenario.rainfall_days} day(s)
 Peak water level: {peak_step.water_level_m:.2f}m at hour {peak_step.hour}
 Peak severity: {peak_step.flood_severity.value}
 Area simulated: {total_area_km2:.1f} km²
-Timeline duration: {len(timeline)} hours
+Timeline: {len(timeline)} hours
 
 Key impacts:
 {impact_lines}
 
-Be concise, factual, and highlight the most critical findings.
-Do NOT use headers or bullet points.
-"""
+Include: (1) most critical life-safety finding, (2) time-sensitive action needed.
+Be factual and concise. No headers, no bullets."""
+
             summary = await self._gemini.generate(prompt, use_fast_model=True)
             return summary.strip() if summary else self._fallback_summary(
                 scenario, peak_step, total_area_km2
@@ -287,3 +294,4 @@ Do NOT use headers or bullet points.
             f"({peak_step.flood_severity.value} severity). "
             f"Total simulated area: {area:.1f} km²."
         )
+

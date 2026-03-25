@@ -216,10 +216,12 @@ class FeatureEngineer:
         audit_logger: AuditLogger,
     ) -> pd.DataFrame:
         """Derives terrain wetness and low-elevation flags from real dataset cols."""
-        slope_col = "slope_degree"    # real column name
-        elev_col  = "elevation_m"     # real column name
+        slope_col   = "slope_degree"    # real column name
+        elev_col    = "elevation_m"      # real column name
+        terrain_raw = "terrain_type"      # raw string column
         added = []
         try:
+            # 1. Slope-based features
             if slope_col in df.columns:
                 slope_rad = np.radians(df[slope_col].fillna(1.0).clip(lower=0.01))
                 df["terrain_wetness_idx"] = np.log(
@@ -227,9 +229,20 @@ class FeatureEngineer:
                 ).clip(-5, 20)
                 added.append("terrain_wetness_idx")
 
+            # 2. Elevation-based features
             if elev_col in df.columns:
                 df["low_elevation_flag"] = (df[elev_col].fillna(50) < 50).astype(int)
                 added.append("low_elevation_flag")
+            
+            # 3. Handle terrain_type mapping (from string to encoded)
+            if terrain_raw in df.columns and "terrain_type_encoded" not in df.columns:
+                # Import map from PredictionAgent to stay in sync
+                from agents.prediction.prediction_agent import TERRAIN_TYPE_ENCODING
+                
+                df["terrain_type_encoded"] = df[terrain_raw].astype(str).str.lower().map(
+                    TERRAIN_TYPE_ENCODING
+                ).fillna(1.0).astype(float)
+                added.append("terrain_type_encoded")
 
             if added:
                 audit_logger.log(

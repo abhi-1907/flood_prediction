@@ -89,9 +89,9 @@ class ScenarioEngine:
         # Rule-based scenario detection
         scenario = self._rule_based_parse(query, env_data, context)
 
-        # LLM enhancement if the query is complex
-        if self._gemini and len(query) > 30:
-            scenario = await self._llm_parse(scenario, query, env_data, context)
+        # LLM parse intentionally skipped — rule-based is sufficient and
+        # saves one Gemini API call. ScenarioEngine._llm_parse still exists
+        # as fallback if re-enabled here.
 
         logger.info(
             f"[ScenarioEngine] Built scenario: type={scenario.scenario_type} | "
