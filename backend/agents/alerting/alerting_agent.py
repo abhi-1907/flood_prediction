@@ -111,13 +111,18 @@ class AlertingAgent:
 
         try:
             # ── 1. Get prediction data ────────────────────────────────────
-            prediction = session.get_artifact("ensemble_prediction")
-            if not prediction or not isinstance(prediction, dict):
+            # Try getting the full result object, then fall back to legacy ensemble dict
+            raw_pred = session.get_artifact("prediction_result") or session.get_artifact("ensemble_prediction")
+            
+            if not raw_pred or not isinstance(raw_pred, dict):
                 return AlertingResult(
                     session_id=session_id,
                     status="skipped",
                     warnings=["No prediction data — skipping alert evaluation."],
                 )
+
+            # Handle nested data if we got 'prediction_result' (PredictionResult.model_dump())
+            prediction = raw_pred.get("ensemble") if "ensemble" in raw_pred and isinstance(raw_pred["ensemble"], dict) else raw_pred
 
             risk_level = prediction.get("risk_level", "MEDIUM")
             flood_prob = prediction.get("flood_probability", 0.5)
@@ -137,7 +142,7 @@ class AlertingAgent:
             if not should_alert:
                 logger.info(
                     f"[AlertingAgent] Alert suppressed for {location} "
-                    f"(severity={severity.value}, cooldown/quiet-hours)"
+                    f"(severity={severity.value}, risk={risk_level})"
                 )
                 return AlertingResult(
                     session_id=session_id,
@@ -148,23 +153,20 @@ class AlertingAgent:
                 )
 
             # ── 3. Find matching subscribers ──────────────────────────────
-            if latitude is not None and longitude is not None:
-                subscribers = self._subscribers.find_by_location(
-                    latitude=latitude,
-                    longitude=longitude,
-                    risk_level=risk_level,
-                )
-            else:
-                subscribers = self._subscribers.list_all()
+            subscribers = self._subscribers.find_by_location(
+                latitude=latitude,
+                longitude=longitude,
+                risk_level=risk_level,
+                location=location,
+            )
 
             # Add authorities on escalation
             if escalation in (EscalationLevel.LEVEL_2, EscalationLevel.LEVEL_3):
-                if latitude is not None and longitude is not None:
-                    authorities = self._subscribers.find_authorities(latitude, longitude)
-                    existing_ids = {s.id for s in subscribers}
-                    for auth in authorities:
-                        if auth.id not in existing_ids:
-                            subscribers.append(auth)
+                authorities = self._subscribers.find_authorities(latitude, longitude)
+                existing_ids = {s.id for s in subscribers}
+                for auth in authorities:
+                    if auth.id not in existing_ids:
+                        subscribers.append(auth)
 
             if not subscribers:
                 warnings.append("No subscribers found for this location.")

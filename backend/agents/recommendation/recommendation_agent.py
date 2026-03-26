@@ -94,13 +94,18 @@ class RecommendationAgent:
 
         try:
             # ── 1. Retrieve prediction results ────────────────────────────
-            prediction = session.get_artifact("ensemble_prediction")
-            if not prediction or not isinstance(prediction, dict):
+            # Get prediction result (from session or passed directly)
+            raw_pred = kwargs.get("prediction") or session.get_artifact("prediction_result") or session.get_artifact("ensemble_prediction")
+            
+            if not raw_pred or not isinstance(raw_pred, dict):
                 return RecommendationResult(
                     session_id=session_id,
                     status="failed",
-                    errors=["No prediction results found. Run PredictionAgent first."],
+                    errors=["No prediction information provided. Run PredictionAgent first."],
                 )
+
+            # Handle nested data if we got 'prediction_result'
+            prediction = raw_pred.get("ensemble") if "ensemble" in raw_pred and isinstance(raw_pred["ensemble"], dict) else raw_pred
 
             risk_level = prediction.get("risk_level", "MEDIUM")
             flood_prob = prediction.get("flood_probability", 0.5)

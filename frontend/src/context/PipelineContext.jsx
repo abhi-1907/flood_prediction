@@ -251,6 +251,12 @@ export function PipelineProvider({ children }) {
           body: form,
           signal: abortRef.current.signal,
         });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.detail || `Server error ${response.status}`);
+        }
+
         const data = await response.json();
         applyOrchestrationResult(data);
         dispatch({ type: "SET_DONE", value: true });

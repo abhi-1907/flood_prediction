@@ -10,7 +10,7 @@ GET  /orchestrate/sessions/{session_id} – Get session detail
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -34,8 +34,8 @@ class OrchestrationRequest(BaseModel):
 class OrchestrationResponse(BaseModel):
     session_id: str
     prediction: Optional[dict] = None
-    recommendations: Optional[str] = None
-    simulation: Optional[dict] = None
+    recommendations: Optional[Any] = None
+    simulation: Optional[Any] = None
     alert_status: Optional[dict] = None
     steps_summary: list = []
     elapsed_seconds: float = 0.0

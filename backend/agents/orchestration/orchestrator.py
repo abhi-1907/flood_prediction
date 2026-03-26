@@ -117,6 +117,8 @@ class OrchestratorAgent:
                     {"step_index": 2, "agent": "preprocessing", "action": "Preprocess data", "inputs": {"dataset": "raw_dataset"}, "depends_on": [1]},
                     {"step_index": 3, "agent": "prediction", "action": "Predict flood risk", "inputs": {"dataset": "processed_dataset"}, "depends_on": [2]},
                     {"step_index": 4, "agent": "recommendation", "action": "Generate recommendations", "inputs": {"dataset": "processed_dataset"}, "depends_on": [3]},
+                    {"step_index": 5, "agent": "simulation", "action": "Model flood zones", "inputs": {"prediction": "prediction_result"}, "depends_on": [3]},
+                    {"step_index": 6, "agent": "alerting", "action": "Send subscriber alerts", "inputs": {"prediction": "prediction_result", "recommendations": "recommendations"}, "depends_on": [4, 5]},
                 ]
                 
                 # 2. Hardcoded Fetch Plan (Assume user data is primary)

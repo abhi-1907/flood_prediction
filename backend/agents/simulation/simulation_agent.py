@@ -194,8 +194,11 @@ class SimulationAgent:
         env: Dict[str, Any] = {}
 
         # From prediction results
-        pred = session.get_artifact("ensemble_prediction")
-        if pred and isinstance(pred, dict):
+        raw_pred = session.get_artifact("prediction_result") or session.get_artifact("ensemble_prediction")
+        if raw_pred and isinstance(raw_pred, dict):
+            # Handle nested data if we got 'prediction_result'
+            pred = raw_pred.get("ensemble") if "ensemble" in raw_pred and isinstance(raw_pred["ensemble"], dict) else raw_pred
+            
             env["flood_probability"] = pred.get("flood_probability", 0.5)
             env["risk_level"]        = pred.get("risk_level", "MEDIUM")
 

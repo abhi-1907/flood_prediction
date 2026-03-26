@@ -101,9 +101,10 @@ class SubscriberManager:
 
     def find_by_location(
         self,
-        latitude:   float,
-        longitude:  float,
+        latitude:   Optional[float],
+        longitude:  Optional[float],
         risk_level: str,
+        location:   str = "",
     ) -> List[Subscriber]:
         """
         Finds all active subscribers within range of the given coordinates
@@ -130,9 +131,14 @@ class SubscriberManager:
                 continue
 
             # Distance check (haversine)
-            dist = self._haversine(latitude, longitude, sub.latitude, sub.longitude)
-            if dist <= sub.radius_km:
-                matched.append((dist, sub))
+            if latitude is not None and longitude is not None and \
+               sub.latitude is not None and sub.longitude is not None:
+                dist = self._haversine(latitude, longitude, sub.latitude, sub.longitude)
+                if dist <= sub.radius_km:
+                    matched.append((dist, sub))
+            elif location and sub.location.lower().strip() == location.lower().strip():
+                # Fallback: exact location name match if coordinates are missing
+                matched.append((0.0, sub))
 
         # Sort by distance (nearest first)
         matched.sort(key=lambda x: x[0])
@@ -146,17 +152,21 @@ class SubscriberManager:
 
     def find_authorities(
         self,
-        latitude:  float,
-        longitude: float,
+        latitude:  Optional[float],
+        longitude: Optional[float],
     ) -> List[Subscriber]:
         """Finds authority subscribers near the given location (no risk threshold)."""
         matched = []
         for sub in self._store.values():
             if not sub.is_active or not sub.is_authority:
                 continue
-            dist = self._haversine(latitude, longitude, sub.latitude, sub.longitude)
-            if dist <= sub.radius_km * 2:   # Wider radius for authorities
-                matched.append(sub)
+            
+            if latitude is not None and longitude is not None and \
+               sub.latitude is not None and sub.longitude is not None:
+                dist = self._haversine(latitude, longitude, sub.latitude, sub.longitude)
+                if dist <= sub.radius_km * 2:   # Wider radius for authorities
+                    matched.append(sub)
+            # No location fallback for authorities (usually need precise coords)
         return matched
 
     # ── Bulk operations ───────────────────────────────────────────────────
@@ -192,8 +202,12 @@ class SubscriberManager:
     # ── Haversine distance ────────────────────────────────────────────────
 
     @staticmethod
-    def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """Returns distance in km between two lat/lon points."""
+    def _haversine(lat1: Optional[float], lon1: Optional[float], 
+                   lat2: Optional[float], lon2: Optional[float]) -> float:
+        """Returns distance in km between two lat/lon points. Returns infinity if inputs are None."""
+        if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+            return float('inf')
+
         dlat = math.radians(lat2 - lat1)
         dlon = math.radians(lon2 - lon1)
         a = (math.sin(dlat / 2) ** 2 +

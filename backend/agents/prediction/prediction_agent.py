@@ -278,6 +278,11 @@ class PredictionAgent:
             context=context,
             weights=plan.weights,
         )
+        
+        # ── 5.1 Store artifacts for backward compatibility ────────────────
+        if session:
+            session.store_artifact("ensemble_prediction", ensemble.model_dump())
+            session.store_artifact("prediction_explanation", explanation.model_dump())
 
         # ── 6. Collect warnings ───────────────────────────────────────────
         failed_models = [
